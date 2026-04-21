@@ -173,6 +173,15 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         kwargs['partial'] = True
         return self.update(request, *args, **kwargs)
 
+    def destroy(self, request, *args, **kwargs):
+        instance = self.get_object()
+        if request.user.role == 'ADMIN' and instance.pk == request.user.pk:
+            return Response(
+                {'error': 'Admin cannot delete their own account.'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        return super().destroy(request, *args, **kwargs)
+
 
 class AdminChangeUserPasswordView(views.APIView):
     """
