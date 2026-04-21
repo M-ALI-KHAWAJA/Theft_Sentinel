@@ -41,12 +41,23 @@ def validate_password_strength(value):
 class UserSerializer(serializers.ModelSerializer):
     """User serializer"""
     id = serializers.CharField(read_only=True)  # MongoDB ObjectId as string
-    role = serializers.CharField(read_only=True)
-    
+
     class Meta:
         model = User
         fields = ['id', 'username', 'email', 'role', 'is_active', 'created_at']
         read_only_fields = ['id', 'created_at']
+
+    def validate_role(self, value):
+        """Ensure only one active Admin when assigning ADMIN role (create or update)."""
+        if value == 'ADMIN':
+            qs = User.objects.filter(role='ADMIN', is_active=True)
+            if self.instance is not None:
+                qs = qs.exclude(pk=self.instance.pk)
+            if qs.exists():
+                raise serializers.ValidationError(
+                    "Only one Admin can exist in the system. An Admin user already exists."
+                )
+        return value
 
 
 class UserCreateSerializer(serializers.ModelSerializer):
