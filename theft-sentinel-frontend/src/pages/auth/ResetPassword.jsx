@@ -4,6 +4,7 @@ import { resetPassword } from '../../api/auth';
 import { LockClosedIcon, CheckCircleIcon, EyeIcon, EyeSlashIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
+import { validatePassword as validatePasswordRules, PASSWORD_EXAMPLE } from '../../utils/validation';
 
 const ResetPassword = () => {
   const navigate = useNavigate();
@@ -39,19 +40,12 @@ const ResetPassword = () => {
     });
   };
 
-  const validatePassword = (password) => {
-    if (password.length < 8) {
-      return 'Password must be at least 8 characters long';
-    }
-    return null;
-  };
-
   const handleSubmit = async (e) => {
     e.preventDefault();
     
-    const passwordError = validatePassword(formData.new_password);
-    if (passwordError) {
-      showError(passwordError);
+    const passwordCheck = validatePasswordRules(formData.new_password);
+    if (!passwordCheck.valid) {
+      showError(passwordCheck.message);
       return;
     }
 
@@ -83,10 +77,14 @@ const ResetPassword = () => {
         navigate('/login');
       }, 3000);
     } catch (error) {
-      const errorMsg = error.response?.data?.error || 
-                      error.response?.data?.message ||
-                      error.response?.data?.non_field_errors?.[0] ||
-                      'Failed to reset password. Please try again.';
+      const d = error.response?.data;
+      const np = d?.new_password;
+      const errorMsg =
+        (Array.isArray(np) ? np[0] : np) ||
+        d?.error ||
+        d?.message ||
+        d?.non_field_errors?.[0] ||
+        'Failed to reset password. Please try again.';
       showError(errorMsg);
     } finally {
       setLoading(false);
@@ -102,6 +100,8 @@ const ResetPassword = () => {
       </div>
     );
   }
+
+  const newPasswordValidation = validatePasswordRules(formData.new_password);
 
   return (
     <div className="min-h-screen flex items-center justify-center bg-dark-bg relative overflow-hidden">
@@ -161,7 +161,7 @@ const ResetPassword = () => {
                            text-dark-text-primary placeholder-dark-text-muted
                            focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent
                            transition-all duration-200"
-                  placeholder="Enter new password (min. 8 characters)"
+                  placeholder="Enter new password"
                 />
                 <button
                   type="button"
@@ -178,8 +178,11 @@ const ResetPassword = () => {
                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-ai-blue to-ai-purple animate-slideIn" />
                 )}
               </div>
-              {formData.new_password && formData.new_password.length < 8 && (
-                <p className="mt-1 text-xs text-status-error">Password must be at least 8 characters</p>
+              <p className="mt-1 text-xs text-dark-text-muted">
+                Example: {PASSWORD_EXAMPLE}
+              </p>
+              {formData.new_password && !newPasswordValidation.valid && (
+                <p className="mt-1 text-xs text-status-error">{newPasswordValidation.message}</p>
               )}
             </div>
 
@@ -228,7 +231,7 @@ const ResetPassword = () => {
               {formData.confirm_password && formData.new_password !== formData.confirm_password && (
                 <p className="mt-1 text-xs text-status-error">Passwords do not match</p>
               )}
-              {formData.confirm_password && formData.new_password === formData.confirm_password && formData.new_password.length >= 8 && (
+              {formData.confirm_password && formData.new_password === formData.confirm_password && newPasswordValidation.valid && (
                 <p className="mt-1 text-xs text-status-success flex items-center">
                   <CheckCircleIcon className="h-4 w-4 mr-1" />
                   Passwords match
@@ -239,7 +242,7 @@ const ResetPassword = () => {
             {/* Submit Button */}
             <button
               type="submit"
-              disabled={loading || formData.new_password.length < 8 || formData.new_password !== formData.confirm_password}
+              disabled={loading || !newPasswordValidation.valid || formData.new_password !== formData.confirm_password}
               className="group relative w-full py-3 px-4 bg-gradient-to-r from-ai-blue to-ai-purple
                        text-dark-bg font-semibold rounded-lg
                        hover:shadow-glow-ai-lg transition-all duration-300

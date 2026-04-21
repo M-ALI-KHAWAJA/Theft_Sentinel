@@ -36,9 +36,13 @@ const ForgotPassword = () => {
         navigate('/login');
       }, 3000);
     } catch (error) {
-      const errorMsg = error.response?.data?.error || 
-                      error.response?.data?.message ||
-                      'Failed to process request. Please try again.';
+      const data = error.response?.data;
+      const emailErr = data?.email;
+      const errorMsg =
+        (Array.isArray(emailErr) ? emailErr[0] : emailErr) ||
+        data?.error ||
+        data?.message ||
+        'Failed to process request. Please try again.';
       showError(errorMsg);
     } finally {
       setLoading(false);

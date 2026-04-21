@@ -4,7 +4,7 @@ import { getUser, updateUser, adminChangeUserPassword } from '../../api/auth';
 import { ArrowLeftIcon, KeyIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
-import { validateEmail, validateUsername, validatePassword, validatePasswordMatch, trimInput } from '../../utils/validation';
+import { validateEmail, validateUsername, validatePassword, validatePasswordMatch, trimInput, PASSWORD_EXAMPLE } from '../../utils/validation';
 
 const Edit = () => {
   const navigate = useNavigate();
@@ -421,8 +421,9 @@ const Edit = () => {
                       ? 'border-status-error focus:border-status-error focus:ring-status-error'
                       : 'border-dark-border'
                   }`}
-                  placeholder="Min 8 chars, uppercase, lowercase, number"
+                  placeholder="Min 8 chars, upper, lower, number, special"
                 />
+                <p className="mt-1 text-xs text-dark-text-muted">Example: {PASSWORD_EXAMPLE}</p>
                 {touched.new_password && errors.new_password && (
                   <p className="mt-1 text-sm text-status-error">{errors.new_password}</p>
                 )}

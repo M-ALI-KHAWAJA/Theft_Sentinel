@@ -1,11 +1,41 @@
 """
 Serializers for User and Authentication
 """
+import re
+
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
 
 User = get_user_model()
+
+NON_ADMIN_FORGOT_PASSWORD_MESSAGE = (
+    "Only admin can change password from here. Contact admin if you have lost your password."
+)
+
+PASSWORD_COMPLEXITY_ERROR = (
+    "Password must be at least 8 characters long and include at least one uppercase "
+    "letter (A–Z), one lowercase letter (a–z), one number (0–9), and one special "
+    "character (e.g. @, #, $, %)."
+)
+
+
+def validate_password_strength(value):
+    """
+    Enforce password rules for set, change, and reset flows.
+    Raises ValidationError with a single user-facing message if invalid.
+    """
+    if not value or len(value) < 8:
+        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
+    if not re.search(r"[A-Z]", value):
+        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
+    if not re.search(r"[a-z]", value):
+        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
+    if not re.search(r"[0-9]", value):
+        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
+    if not re.search(r"[^A-Za-z0-9]", value):
+        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
+    return value
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -35,6 +65,10 @@ class UserCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError(
                     "Only one Admin can exist in the system. An Admin user already exists."
                 )
+        return value
+
+    def validate_password(self, value):
+        validate_password_strength(value)
         return value
     
     def create(self, validated_data):
@@ -68,8 +102,7 @@ class ChangePasswordSerializer(serializers.Serializer):
     new_password = serializers.CharField(required=True, write_only=True, min_length=8)
     
     def validate_new_password(self, value):
-        if len(value) < 8:
-            raise serializers.ValidationError("Password must be at least 8 characters long")
+        validate_password_strength(value)
         return value
 
 
@@ -81,13 +114,13 @@ class ForgotPasswordSerializer(serializers.Serializer):
         """Validate that email exists and belongs to an admin"""
         try:
             user = User.objects.get(email=value)
-            if user.role != 'ADMIN':
-                raise serializers.ValidationError("Email not registered as an admin.")
-            if not user.is_active:
-                raise serializers.ValidationError("Account is inactive.")
-            return value
         except User.DoesNotExist:
-            raise serializers.ValidationError("Email not registered as an admin.")
+            raise serializers.ValidationError(NON_ADMIN_FORGOT_PASSWORD_MESSAGE)
+        if user.role != 'ADMIN':
+            raise serializers.ValidationError(NON_ADMIN_FORGOT_PASSWORD_MESSAGE)
+        if not user.is_active:
+            raise serializers.ValidationError("Account is inactive.")
+        return value
 
 
 class ResetPasswordSerializer(serializers.Serializer):
@@ -104,6 +137,5 @@ class ResetPasswordSerializer(serializers.Serializer):
         return attrs
     
     def validate_new_password(self, value):
-        if len(value) < 8:
-            raise serializers.ValidationError("Password must be at least 8 characters long")
+        validate_password_strength(value)
         return value

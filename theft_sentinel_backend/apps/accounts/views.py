@@ -13,13 +13,17 @@ from django.core.mail import send_mail
 from django.conf import settings
 import logging
 
+from rest_framework.serializers import ValidationError as DRFValidationError
+
 from .serializers import (
     UserSerializer, 
     UserCreateSerializer, 
     CustomTokenObtainPairSerializer,
     ChangePasswordSerializer,
     ForgotPasswordSerializer,
-    ResetPasswordSerializer
+    ResetPasswordSerializer,
+    validate_password_strength,
+    NON_ADMIN_FORGOT_PASSWORD_MESSAGE,
 )
 from .permissions import IsAdmin, CanChangeOwnPassword, CanManageUsers, IsAdminOrIncharge
 from .models import PasswordResetToken, PasswordResetAudit
@@ -192,6 +196,13 @@ class AdminChangeUserPasswordView(views.APIView):
                 {'error': 'New password is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+        try:
+            validate_password_strength(new_password)
+        except DRFValidationError as exc:
+            detail = exc.detail
+            msg = str(detail[0]) if isinstance(detail, list) and detail else str(detail)
+            return Response({'error': msg}, status=status.HTTP_400_BAD_REQUEST)
         
         user.set_password(new_password)
         user.save()
@@ -254,22 +265,6 @@ class ForgotPasswordView(views.APIView):
         
         try:
             user = User.objects.get(email=email)
-            
-            # Verify user is admin
-            if user.role != 'ADMIN':
-                # Log non-admin attempt
-                self._log_audit(
-                    email=email,
-                    is_admin=False,
-                    success=False,
-                    reason='Non-admin user attempted password reset',
-                    request=request
-                )
-                # Don't reveal if email exists for non-admin users
-                return Response(
-                    {'message': 'If this email is registered as an admin, a password reset link has been sent.'},
-                    status=status.HTTP_200_OK
-                )
             
             if not user.is_active:
                 # Log inactive account attempt
@@ -383,10 +378,9 @@ Theft Sentinel Team''',
                 reason='Email not found in database',
                 request=request
             )
-            # Don't reveal if email exists for security
             return Response(
-                {'message': 'If this email is registered as an admin, a password reset link has been sent.'},
-                status=status.HTTP_200_OK
+                {'email': [NON_ADMIN_FORGOT_PASSWORD_MESSAGE]},
+                status=status.HTTP_400_BAD_REQUEST
             )
 
 

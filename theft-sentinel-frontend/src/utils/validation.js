@@ -96,6 +96,12 @@ export const validateUsername = (username) => {
   return { valid: true, message: '' };
 };
 
+/** Shown next to password fields as a format hint */
+export const PASSWORD_EXAMPLE = 'Abc@1234';
+
+const PASSWORD_RULES_MESSAGE =
+  'Password must be at least 8 characters long and include at least one uppercase letter (A–Z), one lowercase letter (a–z), one number (0–9), and one special character (e.g. @, #, $, %).';
+
 /**
  * Validates password strength
  * Rules:
@@ -103,6 +109,7 @@ export const validateUsername = (username) => {
  * - At least one uppercase letter
  * - At least one lowercase letter
  * - At least one number
+ * - At least one special character (non-alphanumeric)
  */
 export const validatePassword = (password) => {
   if (!password || password.trim() === '') {
@@ -116,7 +123,7 @@ export const validatePassword = (password) => {
 
   // Minimum length
   if (password.length < 8) {
-    return { valid: false, message: 'Password must be at least 8 characters long' };
+    return { valid: false, message: PASSWORD_RULES_MESSAGE };
   }
 
   // Maximum length (reasonable limit)
@@ -126,17 +133,22 @@ export const validatePassword = (password) => {
 
   // At least one uppercase letter
   if (!/[A-Z]/.test(password)) {
-    return { valid: false, message: 'Password must contain at least one uppercase letter' };
+    return { valid: false, message: PASSWORD_RULES_MESSAGE };
   }
 
   // At least one lowercase letter
   if (!/[a-z]/.test(password)) {
-    return { valid: false, message: 'Password must contain at least one lowercase letter' };
+    return { valid: false, message: PASSWORD_RULES_MESSAGE };
   }
 
   // At least one number
   if (!/[0-9]/.test(password)) {
-    return { valid: false, message: 'Password must contain at least one number' };
+    return { valid: false, message: PASSWORD_RULES_MESSAGE };
+  }
+
+  // At least one special character
+  if (!/[^A-Za-z0-9]/.test(password)) {
+    return { valid: false, message: PASSWORD_RULES_MESSAGE };
   }
 
   return { valid: true, message: '' };
