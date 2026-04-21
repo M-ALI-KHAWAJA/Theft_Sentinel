@@ -166,11 +166,70 @@ const View = () => {
             </div>
           )}
 
-          {alert.video_url && (
-            <video controls className="w-full rounded">
-              <source src={alert.video_url} type="video/mp4" />
-            </video>
-          )}
+          {/* Detection Video Clip */}
+          <div>
+            <h3 className="text-lg font-semibold text-dark-text-primary mb-3 flex items-center gap-2">
+              <span>🎬</span> Detection Clip
+              {alert.video_url && (
+                <span className="text-xs font-normal px-2 py-0.5 rounded-full bg-status-success/20 text-status-success border border-status-success/40">
+                  Available
+                </span>
+              )}
+            </h3>
+
+            {alert.video_url ? (
+              <div className="rounded-xl overflow-hidden border border-dark-border bg-black shadow-lg">
+                <video
+                  controls
+                  autoPlay={false}
+                  playsInline
+                  preload="metadata"
+                  className="w-full max-h-[480px] object-contain"
+                  style={{ background: '#000' }}
+                >
+                  <source src={alert.video_url} type="video/mp4" />
+                  <source src={alert.video_url} type="video/webm" />
+                  Your browser does not support the video element.
+                </video>
+                <div className="flex items-center justify-between px-4 py-2 bg-dark-card border-t border-dark-border">
+                  <span className="text-xs text-dark-text-muted">
+                    📹 ~5 second clip captured around detection event
+                  </span>
+                  <a
+                    href={alert.video_url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-ai-blue hover:underline font-medium"
+                  >
+                    Open in new tab ↗
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-xl border border-dark-border border-dashed bg-dark-card p-8 flex flex-col items-center justify-center gap-3 text-center">
+                <span className="text-4xl">⏳</span>
+                <p className="text-dark-text-secondary font-medium">
+                  {alert.status === 'ACTIVE'
+                    ? 'Clip is being processed & uploaded…'
+                    : 'No clip available for this alert'}
+                </p>
+                <p className="text-xs text-dark-text-muted max-w-xs">
+                  {alert.status === 'ACTIVE'
+                    ? 'Cloudinary upload runs in the background. Refresh in a few seconds.'
+                    : 'A 5-second clip is captured automatically when theft is detected. Older alerts may not have one.'}
+                </p>
+                {alert.status === 'ACTIVE' && (
+                  <button
+                    onClick={fetchAlert}
+                    className="mt-1 px-4 py-1.5 text-sm bg-ai-blue/20 text-ai-blue border border-ai-blue/40 rounded-md hover:bg-ai-blue/30 transition-colors font-medium"
+                  >
+                    Refresh
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
+
 
           {/* Additional Info */}
           {alert.metadata && (

@@ -248,43 +248,72 @@ class ContinuousMonitor:
             return None
     
     def _try_upload_alert_clip(self, alert) -> None:
-        """Encode last few seconds from the rolling buffer, upload to Cloudinary, save URL."""
-        from .clip_encoding import write_frames_to_mp4
-        from apps.alerts.cloudinary_video import upload_video_to_cloudinary
-        
-        frames = list(self._frame_buffer)
+        """
+        Snapshot the rolling frame buffer and upload a 5-second clip to Cloudinary
+        in a background thread so the monitoring loop is not blocked.
+        """
+        frames = list(self._frame_buffer)  # snapshot — thread-safe copy
         if not frames:
+            logger.warning("Frame buffer empty — no clip to upload for alert %s", alert.id)
             return
-        
-        stats = self.get_stats()
-        fps = float(stats.get("fps") or 0)
-        if fps < 5.0:
-            fps = 25.0
-        
-        min_clip = max(8, int(fps * 3))
-        max_clip = min(len(frames), int(fps * 5))
-        preferred = int(fps * 4)
-        clip_count = min(len(frames), max(min_clip, min(max_clip, preferred)))
-        clip_frames = frames[-clip_count:]
-        
-        tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
-        tmp_path = tmp.name
-        tmp.close()
-        try:
-            if not write_frames_to_mp4(clip_frames, tmp_path, fps=fps):
-                return
-            video_url, public_id = upload_video_to_cloudinary(tmp_path)
-            if video_url:
-                alert.video_url = video_url
-                alert.video_public_id = public_id
-                alert.save(update_fields=["video_url", "video_public_id"])
-        except Exception as e:
-            logger.error(f"Alert clip upload failed: {e}", exc_info=True)
-        finally:
+
+        alert_id = str(alert.id)
+
+        def _upload_worker():
+            from .clip_encoding import write_frames_to_mp4
+            from apps.alerts.cloudinary_video import upload_video_to_cloudinary
+            import django
+            django.setup.__module__  # ensure ORM is ready in this thread
+
+            stats = self.get_stats()
+            fps = float(stats.get("fps") or 0)
+            if fps < 5.0:
+                fps = 25.0  # safe fallback when FPS not yet settled
+
+            # Take up to 5 seconds worth of frames from the tail of the buffer
+            clip_count = min(len(frames), int(fps * 5))
+            clip_count = max(clip_count, 8)   # never fewer than 8 frames
+            clip_frames = frames[-clip_count:]
+
+            tmp = tempfile.NamedTemporaryFile(suffix=".mp4", delete=False)
+            tmp_path = tmp.name
+            tmp.close()
             try:
-                os.unlink(tmp_path)
-            except OSError:
-                pass
+                logger.info("🎬 Encoding %d-frame clip (%.1f s) for alert %s",
+                            len(clip_frames), len(clip_frames) / fps, alert_id)
+                if not write_frames_to_mp4(clip_frames, tmp_path, fps=fps):
+                    logger.error("Clip encoding failed for alert %s", alert_id)
+                    return
+
+                logger.info("☁️  Uploading clip to Cloudinary for alert %s …", alert_id)
+                video_url, public_id = upload_video_to_cloudinary(tmp_path)
+
+                if video_url:
+                    # Re-fetch the alert inside this thread to avoid stale state
+                    from apps.alerts.models import Alert as AlertModel
+                    try:
+                        fresh = AlertModel.objects.get(pk=alert_id)
+                        fresh.video_url = video_url
+                        fresh.video_public_id = public_id
+                        fresh.save(update_fields=["video_url", "video_public_id"])
+                        logger.info("✅ Clip saved for alert %s → %s", alert_id, video_url)
+                    except AlertModel.DoesNotExist:
+                        logger.warning("Alert %s no longer exists; discarding clip", alert_id)
+                else:
+                    logger.warning("Cloudinary returned no URL for alert %s", alert_id)
+
+            except Exception as exc:
+                logger.error("Alert clip upload failed for %s: %s", alert_id, exc, exc_info=True)
+            finally:
+                try:
+                    os.unlink(tmp_path)
+                except OSError:
+                    pass
+
+        t = threading.Thread(target=_upload_worker, daemon=True,
+                             name=f"clip-upload-{alert_id}")
+        t.start()
+
 
 
 class MonitorManager:
