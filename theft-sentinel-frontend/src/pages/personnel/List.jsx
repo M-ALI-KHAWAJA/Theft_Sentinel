@@ -1,4 +1,5 @@
 import { useState, useEffect, useRef } from 'react';
+import { useRecoilValue } from 'recoil';
 import { listUsers, deleteUser } from '../../api/auth';
 import Table, { Pagination } from '../../components/Table';
 import { useNavigate, useLocation } from 'react-router-dom';
@@ -6,9 +7,14 @@ import { PlusIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import ConfirmationModal from '../../components/ConfirmationModal';
 import { useModal } from '../../hooks/useModal';
+import { authUserState } from '../../store/authStore';
+
+const ADMIN_SELF_DELETE_MESSAGE = 'Admin cannot delete their own account.';
 
 const List = () => {
   const navigate = useNavigate();
+  const location = useLocation();
+  const authUser = useRecoilValue(authUserState);
   const [users, setUsers] = useState([]);
   const [loading, setLoading] = useState(true);
   const [currentPage, setCurrentPage] = useState(1);
@@ -44,22 +50,39 @@ const List = () => {
     }
   };
 
+  const isAdminDeletingSelf = (user) =>
+    authUser?.role === 'ADMIN' && user && String(user.id) === String(authUser.id);
+
   const handleDeleteClick = (user) => {
+    if (isAdminDeletingSelf(user)) {
+      showError(ADMIN_SELF_DELETE_MESSAGE);
+      return;
+    }
     setDeleteConfirmation({ show: true, user });
   };
 
   const handleDeleteConfirm = async () => {
-    const userId = deleteConfirmation.user.id;
-    const username = deleteConfirmation.user.username;
+    const targetUser = deleteConfirmation.user;
+    if (isAdminDeletingSelf(targetUser)) {
+      setDeleteConfirmation({ show: false, user: null });
+      showError(ADMIN_SELF_DELETE_MESSAGE);
+      return;
+    }
+
+    const userId = targetUser.id;
     setDeleteConfirmation({ show: false, user: null });
-    
+
     try {
       await deleteUser(userId);
       showSuccess('User deleted successfully');
       fetchUsers();
     } catch (error) {
       console.error('Error deleting user:', error);
-      const errorMsg = error.response?.data?.detail || error.response?.data?.error || 'Failed to delete user';
+      const errorMsg =
+        error.response?.data?.detail ||
+        error.response?.data?.error ||
+        error.response?.data?.message ||
+        'Failed to delete user';
       showError(errorMsg);
     }
   };
