@@ -53,3 +53,4 @@ htmlcov/
 # */migrations/*.py
 # !*/migrations/__init__.py
 
+/logs
