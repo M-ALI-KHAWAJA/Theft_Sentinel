@@ -34,5 +34,9 @@ class PersonnelCreateSerializer(serializers.ModelSerializer):
         """Check if user already has personnel profile"""
         if Personnel.objects.filter(user=value).exists():
             raise serializers.ValidationError("This user already has a personnel profile")
+        request = self.context.get('request')
+        if request and request.user.is_authenticated:
+            if getattr(value, 'tenant_id', None) != getattr(request.user, 'tenant_id', None):
+                raise serializers.ValidationError('User must belong to your branch.')
         return value
 

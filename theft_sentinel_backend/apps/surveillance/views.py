@@ -5,6 +5,9 @@ from rest_framework import generics, status, views
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 
+from apps.accounts.permissions import IsApprovedBranchUser
+from config.tenant_scope import scoped_surveillance_events, scoped_cameras
+
 from .models import SurveillanceEvent
 from .serializers import SurveillanceEventSerializer, SurveillanceEventCreateSerializer
 from .services import SurveillanceService
@@ -18,10 +21,10 @@ logger = logging.getLogger(__name__)
 class SurveillanceEventListView(generics.ListAPIView):
     """List all surveillance events"""
     serializer_class = SurveillanceEventSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_queryset(self):
-        queryset = SurveillanceEvent.objects.select_related('camera_id').all()
+        queryset = scoped_surveillance_events(self.request.user).select_related('camera_id')
         
         # Filter by camera
         camera_id = self.request.query_params.get('camera_id', None)
@@ -49,10 +52,10 @@ class SurveillanceEventDetailView(generics.RetrieveAPIView):
     """Retrieve a surveillance event"""
     queryset = SurveillanceEvent.objects.all()
     serializer_class = SurveillanceEventSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_queryset(self):
-        return SurveillanceEvent.objects.select_related('camera_id').all()
+        return scoped_surveillance_events(self.request.user).select_related('camera_id')
 
 
 class SurveillanceEventIngestView(views.APIView):
@@ -60,7 +63,7 @@ class SurveillanceEventIngestView(views.APIView):
     Ingest AI-detected surveillance events
     This endpoint receives events from AI detection systems
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def post(self, request):
         """
@@ -78,6 +81,10 @@ class SurveillanceEventIngestView(views.APIView):
             }
         }
         """
+        cam_id = request.data.get('camera_id')
+        if cam_id and not scoped_cameras(request.user).filter(pk=cam_id).exists():
+            return Response({'error': 'Camera not found'}, status=status.HTTP_400_BAD_REQUEST)
+
         serializer = SurveillanceEventCreateSerializer(data=request.data)
         
         if serializer.is_valid():

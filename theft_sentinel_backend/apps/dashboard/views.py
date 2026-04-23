@@ -24,7 +24,15 @@ from apps.incidents.models import Incident
 from apps.surveillance.models import SurveillanceEvent
 from apps.personnel.models import Personnel
 from django.contrib.auth import get_user_model
-from apps.accounts.permissions import CanViewReports, CanGenerateReports
+from apps.accounts.permissions import CanViewReports, CanGenerateReports, IsApprovedBranchUser
+from config.tenant_scope import (
+    scoped_alerts,
+    scoped_cameras,
+    scoped_incidents,
+    scoped_personnel,
+    scoped_surveillance_events,
+    scoped_users,
+)
 
 User = get_user_model()
 
@@ -37,7 +45,7 @@ class DashboardOverviewView(views.APIView):
     - Admin & Security In-Charge: Can view dashboard/reports
     - Security Guard: Cannot view dashboard/reports
     """
-    permission_classes = [IsAuthenticated, CanViewReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewReports]
     
     def get(self, request):
         """
@@ -47,40 +55,46 @@ class DashboardOverviewView(views.APIView):
         now = timezone.now()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_ago = now - timedelta(days=7)
-        month_ago = now - timedelta(days=30)
         
+        cams = scoped_cameras(request.user)
+        alts = scoped_alerts(request.user)
+        incs = scoped_incidents(request.user)
+        pers = scoped_personnel(request.user)
+        users = scoped_users(request.user)
+        evts = scoped_surveillance_events(request.user)
+
         # Camera stats
-        total_cameras = Camera.objects.count()
-        online_cameras = Camera.objects.filter(status='ONLINE').count()
-        offline_cameras = Camera.objects.filter(status='OFFLINE').count()
+        total_cameras = cams.count()
+        online_cameras = cams.filter(status='ONLINE').count()
+        offline_cameras = cams.filter(status='OFFLINE').count()
         
         # Alert stats
-        total_alerts = Alert.objects.count()
-        active_alerts = Alert.objects.filter(status='ACTIVE').count()
-        alerts_today = Alert.objects.filter(timestamp__gte=today_start).count()
-        alerts_this_week = Alert.objects.filter(timestamp__gte=week_ago).count()
+        total_alerts = alts.count()
+        active_alerts = alts.filter(status='ACTIVE').count()
+        alerts_today = alts.filter(timestamp__gte=today_start).count()
+        alerts_this_week = alts.filter(timestamp__gte=week_ago).count()
         
         # Alert severity breakdown
-        alerts_by_severity = Alert.objects.values('severity').annotate(count=Count('id'))
+        alerts_by_severity = alts.values('severity').annotate(count=Count('id'))
         severity_breakdown = {item['severity']: item['count'] for item in alerts_by_severity}
         
         # Incident stats
-        total_incidents = Incident.objects.count()
-        active_incidents = Incident.objects.exclude(status='RESOLVED').count()
-        resolved_incidents = Incident.objects.filter(status='RESOLVED').count()
-        incidents_today = Incident.objects.filter(created_at__gte=today_start).count()
+        total_incidents = incs.count()
+        active_incidents = incs.exclude(status='RESOLVED').count()
+        resolved_incidents = incs.filter(status='RESOLVED').count()
+        incidents_today = incs.filter(created_at__gte=today_start).count()
         
         # Incident status breakdown
-        incidents_by_status = Incident.objects.values('status').annotate(count=Count('id'))
+        incidents_by_status = incs.values('status').annotate(count=Count('id'))
         status_breakdown = {item['status']: item['count'] for item in incidents_by_status}
         
         # Personnel stats
-        total_personnel = Personnel.objects.count()
-        total_users = User.objects.filter(is_active=True).count()
+        total_personnel = pers.count()
+        total_users = users.filter(is_active=True).count()
         
         # Surveillance events
-        events_today = SurveillanceEvent.objects.filter(created_at__gte=today_start).count()
-        events_this_week = SurveillanceEvent.objects.filter(created_at__gte=week_ago).count()
+        events_today = evts.filter(created_at__gte=today_start).count()
+        events_this_week = evts.filter(created_at__gte=week_ago).count()
         
         data = {
             'cameras': {
@@ -126,7 +140,7 @@ class AlertsStatsView(views.APIView):
     - Admin & Security In-Charge: Can view alert reports
     - Security Guard: Cannot view reports
     """
-    permission_classes = [IsAuthenticated, CanViewReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewReports]
     
     def get(self, request):
         """Get alert statistics with time-based breakdown"""
@@ -135,7 +149,7 @@ class AlertsStatsView(views.APIView):
         time_threshold = timezone.now() - timedelta(days=days)
         
         # Alerts over time
-        alerts = Alert.objects.filter(timestamp__gte=time_threshold)
+        alerts = scoped_alerts(request.user).filter(timestamp__gte=time_threshold)
         
         # By type
         alerts_by_type = alerts.values('alert_type').annotate(count=Count('id')).order_by('-count')
@@ -183,7 +197,7 @@ class IncidentsStatsView(views.APIView):
     - Admin & Security In-Charge: Can view incident reports
     - Security Guard: Cannot view reports
     """
-    permission_classes = [IsAuthenticated, CanViewReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewReports]
     
     def get(self, request):
         """Get incident statistics"""
@@ -191,7 +205,7 @@ class IncidentsStatsView(views.APIView):
         
         time_threshold = timezone.now() - timedelta(days=days)
         
-        incidents = Incident.objects.filter(created_at__gte=time_threshold)
+        incidents = scoped_incidents(request.user).filter(created_at__gte=time_threshold)
         
         # By status
         incidents_by_status = incidents.values('status').annotate(count=Count('id'))
@@ -237,11 +251,11 @@ class CamerasStatsView(views.APIView):
     - Admin & Security In-Charge: Can view camera reports
     - Security Guard: Cannot view reports
     """
-    permission_classes = [IsAuthenticated, CanViewReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewReports]
     
     def get(self, request):
         """Get camera statistics"""
-        cameras = Camera.objects.all()
+        cameras = scoped_cameras(request.user)
         
         # By status
         cameras_by_status = cameras.values('status').annotate(count=Count('id'))
@@ -282,22 +296,22 @@ class RecentActivityView(views.APIView):
     - Admin & Security In-Charge: Can view activity reports
     - Security Guard: Cannot view reports
     """
-    permission_classes = [IsAuthenticated, CanViewReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewReports]
     
     def get(self, request):
         """Get recent activity across all modules"""
         limit = int(request.query_params.get('limit', 20))
         
         # Recent alerts
-        recent_alerts = Alert.objects.select_related('camera_id').order_by('-timestamp')[:limit]
+        recent_alerts = scoped_alerts(request.user).select_related('camera_id').order_by('-timestamp')[:limit]
         
         # Recent incidents
-        recent_incidents = Incident.objects.select_related(
+        recent_incidents = scoped_incidents(request.user).select_related(
             'alert_id', 'assigned_to'
         ).order_by('-created_at')[:limit]
         
         # Recent surveillance events
-        recent_events = SurveillanceEvent.objects.select_related(
+        recent_events = scoped_surveillance_events(request.user).select_related(
             'camera_id'
         ).order_by('-created_at')[:limit]
         
@@ -355,7 +369,7 @@ class RealTimeAnalyticsView(views.APIView):
     - Admin & Security In-Charge: Can view real-time analytics
     - Security Guard: Cannot view reports
     """
-    permission_classes = [IsAuthenticated, CanViewReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewReports]
     
     def get(self, request):
         """
@@ -374,12 +388,13 @@ class RealTimeAnalyticsView(views.APIView):
         now = timezone.now()
         
         # Active alerts count
-        active_alerts = Alert.objects.filter(status='ACTIVE').count()
+        active_alerts = scoped_alerts(request.user).filter(status='ACTIVE').count()
         
         # System health calculation based on feed-driven camera status
         # Status is updated by periodic feed checks (every 5 seconds via management command)
-        total_cameras = Camera.objects.count()
-        online_cameras = Camera.objects.filter(status='ONLINE').count()
+        cams = scoped_cameras(request.user)
+        total_cameras = cams.count()
+        online_cameras = cams.filter(status='ONLINE').count()
         offline_cameras = total_cameras - online_cameras
         
         # Classify system health based on online camera ratio (5-level system)
@@ -409,7 +424,7 @@ class RealTimeAnalyticsView(views.APIView):
         # Camera feeds status (feed-driven) - optimized query
         # Status is updated by periodic feed checker (every 5 seconds via management command)
         # This view simply reads the current status - no status modification here
-        cameras = Camera.objects.only('id', 'name', 'location', 'zone', 'status', 'last_feed_timestamp').all()
+        cameras = cams.only('id', 'name', 'location', 'zone', 'status', 'last_feed_timestamp')
         camera_feeds = []
         for camera in cameras:
             camera_feeds.append({
@@ -450,7 +465,7 @@ class HistoricalAlertReportingView(views.APIView):
     - Admin & Security In-Charge: Can view historical reports
     - Security Guard: Cannot view reports
     """
-    permission_classes = [IsAuthenticated, CanViewReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewReports]
     
     def get(self, request):
         """Get historical alert data with aggregation"""
@@ -462,7 +477,7 @@ class HistoricalAlertReportingView(views.APIView):
         
         # Get all alerts in the period (ONLY alerts, not incidents)
         # Alerts come from cameras and AI models
-        alerts = Alert.objects.filter(timestamp__gte=start_date).select_related('camera_id')
+        alerts = scoped_alerts(request.user).filter(timestamp__gte=start_date).select_related('camera_id')
         
         # Aggregate based on period
         if period == 'daily':
@@ -592,7 +607,7 @@ class IncidentReportExportView(views.APIView):
     - Admin & Security In-Charge: Can export reports
     - Security Guard: Cannot export reports
     """
-    permission_classes = [IsAuthenticated, CanGenerateReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanGenerateReports]
     
     def get(self, request):
         """Export incident reports"""
@@ -602,7 +617,7 @@ class IncidentReportExportView(views.APIView):
         
         now = timezone.now()
         start_date = now - timedelta(days=days)
-        incidents = Incident.objects.filter(created_at__gte=start_date).select_related(
+        incidents = scoped_incidents(request.user).filter(created_at__gte=start_date).select_related(
             'alert_id', 'alert_id__camera_id', 'assigned_to'
         )
         
@@ -764,7 +779,7 @@ class AlertReportExportView(views.APIView):
     - Admin & Security In-Charge: Can export reports
     - Security Guard: Cannot export reports
     """
-    permission_classes = [IsAuthenticated, CanGenerateReports]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanGenerateReports]
     
     def get(self, request):
         """
@@ -793,7 +808,7 @@ class AlertReportExportView(views.APIView):
         
         now = timezone.now()
         start_date = now - timedelta(days=days)
-        alerts = Alert.objects.filter(timestamp__gte=start_date).select_related('camera_id')
+        alerts = scoped_alerts(request.user).filter(timestamp__gte=start_date).select_related('camera_id')
         
         if export_type == 'csv':
             return self._export_csv(alerts, period, days, now)

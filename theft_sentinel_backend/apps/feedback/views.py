@@ -13,7 +13,8 @@ from rest_framework.permissions import IsAuthenticated
 
 from .models import Feedback
 from .serializers import FeedbackSerializer, FeedbackCreateSerializer
-from apps.accounts.permissions import IsAdmin, CanSubmitFeedback, CanDeleteFeedback
+from apps.accounts.permissions import IsAdmin, CanSubmitFeedback, CanDeleteFeedback, IsApprovedBranchUser
+from config.tenant_scope import scoped_feedback
 
 
 class FeedbackListCreateView(generics.ListCreateAPIView):
@@ -26,7 +27,7 @@ class FeedbackListCreateView(generics.ListCreateAPIView):
     - All: Can submit feedback
     """
     queryset = Feedback.objects.all()
-    permission_classes = [IsAuthenticated, CanSubmitFeedback]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanSubmitFeedback]
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -34,21 +35,17 @@ class FeedbackListCreateView(generics.ListCreateAPIView):
         return FeedbackSerializer
     
     def get_queryset(self):
-        queryset = Feedback.objects.select_related('user_id').all()
+        queryset = scoped_feedback(self.request.user).select_related('user_id')
         
-        # Admin: Can view all feedback
         if self.request.user.role == 'ADMIN':
-            pass  # No filtering, view all
+            pass
         else:
-            # Security In-Charge & Security Guard: Only view their own feedback
             queryset = queryset.filter(user_id=self.request.user)
         
-        # Filter by type
         feedback_type = self.request.query_params.get('type', None)
         if feedback_type:
             queryset = queryset.filter(type=feedback_type)
         
-        # Filter by user (admin only)
         user_id = self.request.query_params.get('user_id', None)
         if user_id and self.request.user.role == 'ADMIN':
             queryset = queryset.filter(user_id=user_id)
@@ -56,7 +53,7 @@ class FeedbackListCreateView(generics.ListCreateAPIView):
         return queryset.order_by('-created_at')
     
     def perform_create(self, serializer):
-        serializer.save(user_id=self.request.user)
+        serializer.save(user_id=self.request.user, tenant_id=self.request.user.tenant_id)
 
 
 class FeedbackDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -70,24 +67,19 @@ class FeedbackDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     queryset = Feedback.objects.all()
     serializer_class = FeedbackSerializer
-    permission_classes = [IsAuthenticated, CanSubmitFeedback]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanSubmitFeedback]
     
     def get_queryset(self):
-        queryset = Feedback.objects.select_related('user_id').all()
+        queryset = scoped_feedback(self.request.user).select_related('user_id')
         
-        # Admin: Can view all feedback
         if self.request.user.role == 'ADMIN':
-            pass  # No filtering
+            pass
         else:
-            # Security In-Charge & Security Guard: Only access their own feedback
             queryset = queryset.filter(user_id=self.request.user)
         
         return queryset
     
     def destroy(self, request, *args, **kwargs):
-        """
-        Only Admin can delete feedback
-        """
         if request.user.role != 'ADMIN':
             return Response(
                 {'error': 'You do not have permission to delete feedback. Only Admin can delete feedback.'},
@@ -104,10 +96,10 @@ class MyFeedbackView(generics.ListAPIView):
     - All authenticated users can view their own feedback
     """
     serializer_class = FeedbackSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_queryset(self):
-        return Feedback.objects.filter(
+        return scoped_feedback(self.request.user).filter(
             user_id=self.request.user
         ).order_by('-created_at')
 
@@ -119,27 +111,25 @@ class FeedbackStatsView(generics.GenericAPIView):
     Permissions:
     - Only Admin can view feedback statistics
     """
-    permission_classes = [IsAuthenticated, IsAdmin]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdmin]
     
     def get(self, request):
         """Get feedback statistics"""
         from django.db.models import Count
         
-        total_feedback = Feedback.objects.count()
+        base = scoped_feedback(request.user)
+        total_feedback = base.count()
         
-        # By type
-        feedback_by_type = Feedback.objects.values('type').annotate(count=Count('id'))
+        feedback_by_type = base.values('type').annotate(count=Count('id'))
         
-        # Recent feedback (last 30 days)
         from django.utils import timezone
         from datetime import timedelta
         
         thirty_days_ago = timezone.now() - timedelta(days=30)
-        recent_feedback = Feedback.objects.filter(created_at__gte=thirty_days_ago).count()
+        recent_feedback = base.filter(created_at__gte=thirty_days_ago).count()
         
-        # False positive vs True positive
-        false_positive_count = Feedback.objects.filter(type='FALSE_POSITIVE').count()
-        true_positive_count = Feedback.objects.filter(type='TRUE_POSITIVE').count()
+        false_positive_count = base.filter(type='FALSE_POSITIVE').count()
+        true_positive_count = base.filter(type='TRUE_POSITIVE').count()
         
         data = {
             'total_feedback': total_feedback,
@@ -165,7 +155,10 @@ class FeedbackDeleteView(generics.DestroyAPIView):
     - Only Admin can delete feedback
     """
     queryset = Feedback.objects.all()
-    permission_classes = [IsAuthenticated, CanDeleteFeedback]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanDeleteFeedback]
+
+    def get_queryset(self):
+        return scoped_feedback(self.request.user)
     
     def destroy(self, request, *args, **kwargs):
         instance = self.get_object()

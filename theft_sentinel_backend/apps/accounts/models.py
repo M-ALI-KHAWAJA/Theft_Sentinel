@@ -9,50 +9,62 @@ import secrets
 
 
 class UserManager(BaseUserManager):
-    """Custom user manager"""
-    
-    def create_user(self, username, email, password=None, **extra_fields):
-        if not username:
-            raise ValueError('Username is required')
+    """Custom user manager (USERNAME_FIELD is ``email`` — globally unique)."""
+
+    def create_user(self, email, password=None, **extra_fields):
         if not email:
             raise ValueError('Email is required')
-        
         email = self.normalize_email(email)
-        user = self.model(username=username, email=email, **extra_fields)
+        username = extra_fields.pop('username', None)
+        if not username:
+            raise ValueError('Username is required')
+        user = self.model(email=email, username=username, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
-    
-    def create_superuser(self, username, email, password=None, **extra_fields):
-        extra_fields.setdefault('role', 'ADMIN')
+
+    def create_superuser(self, email, password=None, **extra_fields):
+        extra_fields.setdefault('role', 'SUPER_ADMIN')
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
         extra_fields.setdefault('is_active', True)
-        
-        return self.create_user(username, email, password, **extra_fields)
+        extra_fields.setdefault('tenant', None)
+
+        return self.create_user(email, password, **extra_fields)
 
 
 class User(AbstractBaseUser, PermissionsMixin):
     """Custom User Model with role-based access"""
     
     ROLE_CHOICES = [
+        ('SUPER_ADMIN', 'Super Administrator'),
         ('ADMIN', 'Administrator'),
         ('SECURITY_INCHARGE', 'Security In-Charge'),
         ('SECURITY_GUARD', 'Security Guard'),
     ]
     
     id = ObjectIdAutoField(primary_key=True)
-    username = models.CharField(max_length=150, unique=True, db_index=True)
+    # Unique per branch (tenant); same username may exist on different tenants.
+    username = models.CharField(max_length=150, db_index=True)
     email = models.EmailField(max_length=255, unique=True, db_index=True)
-    role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='SECURITY_GUARD')
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.PROTECT,
+        null=True,
+        blank=True,
+        related_name='users',
+    )
+    role = models.CharField(max_length=24, choices=ROLE_CHOICES, default='SECURITY_GUARD')
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=timezone.now)
     
     objects = UserManager()
-    
-    USERNAME_FIELD = 'username'
-    REQUIRED_FIELDS = ['email']
+
+    # Email is globally unique (Django requires USERNAME_FIELD to be unique).
+    # ``username`` is scoped per branch in application validation.
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['username']
     
     class Meta:
         db_table = 'accounts_user'
@@ -73,6 +85,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     @property
     def is_security_guard(self):
         return self.role == 'SECURITY_GUARD'
+
+    @property
+    def is_super_admin(self):
+        return self.role == 'SUPER_ADMIN'
 
 
 class PasswordResetToken(models.Model):
@@ -137,3 +153,64 @@ class PasswordResetAudit(models.Model):
     def __str__(self):
         status = "SUCCESS" if self.success else "FAILED"
         return f"Password reset {status} - {self.email} at {self.timestamp}"
+
+
+class PasswordResetRequest(models.Model):
+    """
+    Branch user requests password reset; Super Admin approves before email is sent.
+    """
+
+    STATUS_CHOICES = [
+        ('PENDING', 'Pending'),
+        ('APPROVED', 'Approved'),
+        ('REJECTED', 'Rejected'),
+    ]
+
+    id = ObjectIdAutoField(primary_key=True)
+    user = models.ForeignKey(
+        User,
+        on_delete=models.CASCADE,
+        related_name='password_reset_requests',
+    )
+    reason = models.TextField()
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='PENDING',
+        db_index=True,
+    )
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'accounts_password_reset_request'
+        verbose_name = 'Password Reset Request'
+        verbose_name_plural = 'Password Reset Requests'
+        ordering = ['-created_at']
+
+    def __str__(self):
+        return f"Reset request {self.user.email} — {self.status}"
+
+
+class SuperAdminProfile(models.Model):
+    """
+    One-time super admin bootstrap: display name, phone, and partner records (JSON).
+    """
+
+    id = ObjectIdAutoField(primary_key=True)
+    user = models.OneToOneField(
+        User,
+        on_delete=models.CASCADE,
+        related_name='super_admin_profile',
+    )
+    display_name = models.CharField(max_length=255)
+    phone = models.CharField(max_length=32)
+    partners = models.JSONField(default=list, blank=True)
+    created_at = models.DateTimeField(default=timezone.now)
+
+    class Meta:
+        db_table = 'accounts_super_admin_profile'
+        verbose_name = 'Super Admin Profile'
+        verbose_name_plural = 'Super Admin Profiles'
+
+    def __str__(self):
+        return self.display_name

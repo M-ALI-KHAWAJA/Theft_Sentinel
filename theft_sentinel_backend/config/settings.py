@@ -32,6 +32,7 @@ INSTALLED_APPS = [
     'corsheaders',
     
     # Local apps
+    'apps.tenants',
     'apps.accounts',
     'apps.personnel',
     'apps.cameras',

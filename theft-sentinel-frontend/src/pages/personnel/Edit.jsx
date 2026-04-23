@@ -178,22 +178,29 @@ const Edit = () => {
       navigate('/personnel', { replace: true });
     } catch (error) {
       console.error('Error updating user:', error);
-      // Handle Admin uniqueness error
       const errorData = error.response?.data;
+      const pick = (v) => (Array.isArray(v) ? v[0] : v);
       let errorMsg = 'Failed to update user';
-      
+
       if (errorData) {
-        if (errorData.role && Array.isArray(errorData.role)) {
-          errorMsg = errorData.role[0] || 'Admin role already exists. Only one Admin is allowed.';
-        } else if (errorData.detail) {
-          errorMsg = errorData.detail;
-        } else if (errorData.error) {
-          errorMsg = errorData.error;
-        } else if (typeof errorData === 'string') {
-          errorMsg = errorData;
+        const nu = errorData.username ? pick(errorData.username) : '';
+        const ne = errorData.email ? pick(errorData.email) : '';
+        if (nu || ne) {
+          setErrors((prev) => ({ ...prev, username: nu, email: ne }));
+          setTouched((prev) => ({ ...prev, username: true, email: true }));
         }
+        errorMsg =
+          nu ||
+          ne ||
+          (errorData.role && Array.isArray(errorData.role)
+            ? errorData.role[0] || 'Admin role already exists. Only one Admin is allowed.'
+            : null) ||
+          (typeof errorData.detail === 'string' ? errorData.detail : pick(errorData.detail)) ||
+          errorData.error ||
+          (typeof errorData === 'string' ? errorData : null) ||
+          errorMsg;
       }
-      
+
       showError(errorMsg);
     } finally {
       setSubmitting(false);

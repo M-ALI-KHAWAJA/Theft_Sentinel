@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { useNavigate, useSearchParams } from 'react-router-dom';
+import { useNavigate, useParams, useSearchParams } from 'react-router-dom';
 import { resetPassword } from '../../api/auth';
 import { LockClosedIcon, CheckCircleIcon, EyeIcon, EyeSlashIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
@@ -8,6 +8,7 @@ import { validatePassword as validatePasswordRules, PASSWORD_EXAMPLE } from '../
 
 const ResetPassword = () => {
   const navigate = useNavigate();
+  const { token: tokenFromPath } = useParams();
   const [searchParams] = useSearchParams();
   const { modalState, showSuccess, showError, hideModal } = useModal();
   
@@ -22,16 +23,27 @@ const ResetPassword = () => {
   const [focusedField, setFocusedField] = useState(null);
 
   useEffect(() => {
-    const tokenParam = searchParams.get('token');
-    if (tokenParam) {
-      setToken(tokenParam);
-    } else {
-      showError('Invalid reset link. Please request a new password reset.');
-      setTimeout(() => {
-        navigate('/forgot-password');
-      }, 3000);
+    const fromQuery = searchParams.get('token');
+    let fromPath = null;
+    if (tokenFromPath) {
+      try {
+        fromPath = decodeURIComponent(tokenFromPath);
+      } catch {
+        fromPath = tokenFromPath;
+      }
     }
-  }, [searchParams, navigate, showError]);
+    const resolved = (fromPath || fromQuery || '').trim() || null;
+    if (resolved) {
+      setToken(resolved);
+      return;
+    }
+    showError('Invalid reset link. Please request a new password reset.');
+    const t = setTimeout(() => {
+      navigate('/forgot-password');
+    }, 3000);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- run when URL changes only
+  }, [searchParams, tokenFromPath, navigate]);
 
   const handleChange = (e) => {
     setFormData({
@@ -63,7 +75,7 @@ const ResetPassword = () => {
 
     try {
       const response = await resetPassword(
-        token,
+        token.trim(),
         formData.new_password,
         formData.confirm_password
       );
@@ -79,13 +91,15 @@ const ResetPassword = () => {
     } catch (error) {
       const d = error.response?.data;
       const np = d?.new_password;
+      const tk = d?.token;
       const errorMsg =
         (Array.isArray(np) ? np[0] : np) ||
+        (Array.isArray(tk) ? tk[0] : tk) ||
         d?.error ||
         d?.message ||
         d?.non_field_errors?.[0] ||
         'Failed to reset password. Please try again.';
-      showError(errorMsg);
+      showError(typeof errorMsg === 'string' ? errorMsg : String(errorMsg));
     } finally {
       setLoading(false);
     }

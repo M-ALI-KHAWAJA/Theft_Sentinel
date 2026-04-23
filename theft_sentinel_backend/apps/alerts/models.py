@@ -16,6 +16,13 @@ class Alert(models.Model):
     ]
     
     id = ObjectIdAutoField(primary_key=True)
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.CASCADE,
+        related_name='alerts',
+        null=True,
+        blank=True,
+    )
     camera_id = models.ForeignKey(
         'cameras.Camera',
         on_delete=models.CASCADE,

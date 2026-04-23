@@ -63,10 +63,19 @@ export const refreshToken = (refresh) => {
   return axiosInstance.post('/api/auth/token/refresh/', { refresh });
 };
 
-// Forgot Password (Admin Only)
+/** @deprecated Direct forgot-password is disabled server-side (403). */
 export const forgotPassword = (email) => {
   return axiosInstance.post('/api/auth/forgot-password/', { email });
 };
+
+export const requestPasswordReset = (payload) =>
+  axiosInstance.post('/api/password-reset-request/', payload);
+
+export const getCreateSuperAdminStatus = () =>
+  axiosInstance.get('/api/create-super-admin/');
+
+export const createSuperAdmin = (payload) =>
+  axiosInstance.post('/api/create-super-admin/', payload);
 
 // Reset Password (Admin Only)
 export const resetPassword = (token, newPassword, confirmPassword) => {

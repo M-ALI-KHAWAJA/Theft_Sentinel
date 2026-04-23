@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { forgotPassword } from '../../api/auth';
+import { requestPasswordReset } from '../../api/auth';
 import { EnvelopeIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
@@ -11,6 +11,7 @@ const ForgotPassword = () => {
   
   const [formData, setFormData] = useState({
     email: '',
+    reason: '',
   });
   const [loading, setLoading] = useState(false);
   const [focusedField, setFocusedField] = useState(null);
@@ -27,10 +28,13 @@ const ForgotPassword = () => {
     setLoading(true);
 
     try {
-      const response = await forgotPassword(formData.email);
+      const response = await requestPasswordReset({
+        email: formData.email.trim(),
+        reason: formData.reason.trim(),
+      });
       showSuccess(
-        response.data.message || 
-        'If this email is registered as an admin, a password reset link has been sent to your email.'
+        response.data.message ||
+          'Request submitted. A Super Admin will review it; if approved, you will receive a reset link by email.',
       );
       setTimeout(() => {
         navigate('/login');
@@ -38,8 +42,10 @@ const ForgotPassword = () => {
     } catch (error) {
       const data = error.response?.data;
       const emailErr = data?.email;
+      const reasonErr = data?.reason;
       const errorMsg =
         (Array.isArray(emailErr) ? emailErr[0] : emailErr) ||
+        (Array.isArray(reasonErr) ? reasonErr[0] : reasonErr) ||
         data?.error ||
         data?.message ||
         'Failed to process request. Please try again.';
@@ -73,20 +79,17 @@ const ForgotPassword = () => {
               <EnvelopeIcon className="h-10 w-10 text-dark-bg" />
             </div>
             <h1 className="text-4xl font-bold mb-2">
-              <span className="text-gradient-ai">Forgot Password</span>
+              <span className="text-gradient-ai">Password reset request</span>
             </h1>
             <p className="text-dark-text-muted text-sm">
-              Admin Password Reset
+              Super Admin approval required before any reset link is sent.
             </p>
           </div>
 
-          {/* Admin-Only Notice */}
           <div className="mb-6 p-4 glass rounded-lg border border-ai-blue/30">
-            <p className="text-sm text-ai-blue font-medium mb-1">
-              <strong>Admin Only:</strong> Only Admin users can reset passwords using this flow.
-            </p>
             <p className="text-xs text-dark-text-muted">
-              Security personnel and guards must contact the admin to change passwords.
+              Submit your work email and a short reason. You will only receive a reset link after a
+              Super Admin approves this request.
             </p>
           </div>
 
@@ -99,7 +102,7 @@ const ForgotPassword = () => {
                   focusedField === 'email' ? 'text-ai-blue' : 'text-dark-text-secondary'
                 }`}
               >
-                Gmail Address
+                Email
               </label>
               <div className="relative">
                 <input
@@ -115,12 +118,39 @@ const ForgotPassword = () => {
                            text-dark-text-primary placeholder-dark-text-muted
                            focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent
                            transition-all duration-200"
-                  placeholder="admin@example.com"
+                  placeholder="you@example.com"
                 />
                 {focusedField === 'email' && (
                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-ai-blue to-ai-purple animate-slideIn" />
                 )}
               </div>
+            </div>
+
+            <div className="space-y-2">
+              <label
+                htmlFor="reason"
+                className={`block text-sm font-medium transition-colors ${
+                  focusedField === 'reason' ? 'text-ai-blue' : 'text-dark-text-secondary'
+                }`}
+              >
+                Reason for reset
+              </label>
+              <textarea
+                id="reason"
+                name="reason"
+                required
+                rows={4}
+                minLength={10}
+                value={formData.reason}
+                onChange={handleChange}
+                onFocus={() => setFocusedField('reason')}
+                onBlur={() => setFocusedField(null)}
+                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg
+                         text-dark-text-primary placeholder-dark-text-muted
+                         focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent
+                         transition-all duration-200 resize-y min-h-[100px]"
+                placeholder="Explain why you need a password reset (at least 10 characters)."
+              />
             </div>
 
             <button
@@ -133,7 +163,7 @@ const ForgotPassword = () => {
                        transform hover:scale-[1.02] active:scale-[0.98]"
             >
               <span className="relative z-10">
-                {loading ? 'Sending...' : 'Send Reset Link'}
+                {loading ? 'Submitting...' : 'Submit request'}
               </span>
               <div className="absolute inset-0 bg-gradient-to-r from-ai-blue to-ai-purple rounded-lg blur-xl opacity-50 group-hover:opacity-75 transition-opacity" />
             </button>

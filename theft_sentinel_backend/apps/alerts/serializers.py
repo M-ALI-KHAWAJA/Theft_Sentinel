@@ -60,6 +60,14 @@ class AlertCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Metadata must be a dictionary")
         return value
 
+    def create(self, validated_data):
+        camera = validated_data['camera_id']
+        tenant = getattr(camera, 'tenant', None)
+        if tenant is None:
+            raise serializers.ValidationError({'camera_id': 'Camera has no branch assigned.'})
+        validated_data['tenant'] = tenant
+        return super().create(validated_data)
+
 
 class AlertAcknowledgeSerializer(serializers.Serializer):
     """Serializer for acknowledging alerts"""

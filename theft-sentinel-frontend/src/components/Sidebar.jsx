@@ -56,6 +56,7 @@ const Sidebar = () => {
   const menuItems = {
     ADMIN: [
       { name: 'Dashboard', path: '/dashboard', icon: HomeIcon },
+      { name: 'Platform queries', path: '/dashboard/platform-queries', icon: ChatBubbleLeftIcon },
       { name: 'Historical Reporting', path: '/dashboard/historical-reporting', icon: ChartBarIcon },
       { name: 'Control Room', path: '/cameras', icon: VideoCameraIcon },
       { name: 'Alerts', path: '/alerts', icon: BellAlertIcon },
@@ -68,6 +69,7 @@ const Sidebar = () => {
     ],
     SECURITY_INCHARGE: [
       { name: 'Dashboard', path: '/dashboard', icon: HomeIcon },
+      { name: 'Platform queries', path: '/dashboard/platform-queries', icon: ChatBubbleLeftIcon },
       { name: 'Historical Reporting', path: '/dashboard/historical-reporting', icon: ChartBarIcon },
       { name: 'Alerts', path: '/alerts', icon: BellAlertIcon },
       { name: 'Incidents', path: '/incidents', icon: ExclamationTriangleIcon },
@@ -78,6 +80,7 @@ const Sidebar = () => {
     ],
     SECURITY_GUARD: [
       { name: 'Dashboard', path: '/dashboard/guard', icon: HomeIcon },
+      { name: 'Platform queries', path: '/dashboard/platform-queries', icon: ChatBubbleLeftIcon },
       { name: 'Control Room', path: '/cameras/control-room', icon: VideoCameraIcon },
       { name: 'Alerts', path: '/alerts/guard', icon: BellAlertIcon },
       { name: 'My Incidents', path: '/incidents/my', icon: ExclamationTriangleIcon },

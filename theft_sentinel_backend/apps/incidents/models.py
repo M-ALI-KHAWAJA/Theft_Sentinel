@@ -11,6 +11,13 @@ class Incident(models.Model):
     """Incident model for tracking security incidents"""
     
     id = ObjectIdAutoField(primary_key=True)
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.CASCADE,
+        related_name='incidents',
+        null=True,
+        blank=True,
+    )
     STATUS_CHOICES = [
         ('CREATED', 'Created'),
         ('ASSIGNED', 'Assigned'),

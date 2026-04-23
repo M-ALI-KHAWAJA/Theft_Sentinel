@@ -8,8 +8,29 @@ from django.urls import path, include
 from django.conf import settings
 from django.conf.urls.static import static
 
+from apps.accounts.views import (
+    CreateSuperAdminView,
+    PasswordResetRequestCreateView,
+    PasswordResetRequestDestroyView,
+)
+from apps.tenants.views import (
+    TenantQueryAnswerView,
+    TenantQueryApproveView,
+    TenantQueryDestroyView,
+    TenantQueryListCreateView,
+)
+
 urlpatterns = [
+    path('api/password-reset-request/<str:pk>/', PasswordResetRequestDestroyView.as_view()),
+    path('api/password-reset-request/', PasswordResetRequestCreateView.as_view()),
+    path('api/queries/<str:pk>/answer/', TenantQueryAnswerView.as_view()),
+    path('api/queries/<str:pk>/approve/', TenantQueryApproveView.as_view()),
+    path('api/queries/<str:pk>/', TenantQueryDestroyView.as_view()),
+    path('api/queries/', TenantQueryListCreateView.as_view()),
+    path('api/create-super-admin/', CreateSuperAdminView.as_view()),
     # API endpoints
+    path('api/tenants/', include('apps.tenants.urls')),
+    path('api/super-admin/', include('apps.tenants.super_admin_urls')),
     path('api/auth/', include('apps.accounts.urls')),
     path('api/personnel/', include('apps.personnel.urls')),
     path('api/cameras/', include('apps.cameras.urls')),

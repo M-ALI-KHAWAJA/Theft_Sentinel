@@ -15,7 +15,8 @@ from datetime import timedelta
 
 from .models import Alert
 from .serializers import AlertSerializer, AlertCreateSerializer, AlertAcknowledgeSerializer
-from apps.accounts.permissions import IsAdminOrIncharge, CanViewAlerts, CanDeleteAlerts
+from apps.accounts.permissions import IsAdminOrIncharge, CanViewAlerts, CanDeleteAlerts, IsApprovedBranchUser
+from config.tenant_scope import scoped_alerts
 
 
 class AlertListCreateView(generics.ListCreateAPIView):
@@ -28,7 +29,7 @@ class AlertListCreateView(generics.ListCreateAPIView):
     - All: Can create alerts (from AI system)
     """
     queryset = Alert.objects.all()
-    permission_classes = [IsAuthenticated, CanViewAlerts]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewAlerts]
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -36,24 +37,16 @@ class AlertListCreateView(generics.ListCreateAPIView):
         return AlertSerializer
     
     def get_queryset(self):
-        queryset = Alert.objects.select_related('camera_id').all()
+        queryset = scoped_alerts(self.request.user).select_related('camera_id')
         
-        # Security Guard: Only view recent alerts (last 24 hours - real-time alerts)
-        # Cannot view alert history
         if self.request.user.role == 'SECURITY_GUARD':
             time_threshold = timezone.now() - timedelta(hours=24)
             queryset = queryset.filter(timestamp__gte=time_threshold)
         
-        # Admin & Security In-Charge: Can view all alerts including history
-        # No filtering needed
-        
-        # Filter by status
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         
-        # Filter by acknowledged (for backward compatibility with frontend)
-        # acknowledged=true -> ACKED or RESOLVED, acknowledged=false -> ACTIVE
         acknowledged_param = self.request.query_params.get('acknowledged', None)
         if acknowledged_param is not None:
             if acknowledged_param.lower() == 'true':
@@ -61,17 +54,14 @@ class AlertListCreateView(generics.ListCreateAPIView):
             elif acknowledged_param.lower() == 'false':
                 queryset = queryset.filter(status='ACTIVE')
         
-        # Filter by camera
         camera_id = self.request.query_params.get('camera_id', None)
         if camera_id:
             queryset = queryset.filter(camera_id=camera_id)
         
-        # Filter by alert_type
         alert_type = self.request.query_params.get('alert_type', None)
         if alert_type:
             queryset = queryset.filter(alert_type=alert_type)
         
-        # Filter by date range (only for Admin & Security In-Charge)
         if self.request.user.role in ['ADMIN', 'SECURITY_INCHARGE']:
             start_date = self.request.query_params.get('start_date', None)
             if start_date:
@@ -95,12 +85,11 @@ class AlertDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     queryset = Alert.objects.all()
     serializer_class = AlertSerializer
-    permission_classes = [IsAuthenticated, CanViewAlerts]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewAlerts]
     
     def get_queryset(self):
-        queryset = Alert.objects.select_related('camera_id').all()
+        queryset = scoped_alerts(self.request.user).select_related('camera_id')
         
-        # Security Guard: Only view recent alerts (last 24 hours)
         if self.request.user.role == 'SECURITY_GUARD':
             time_threshold = timezone.now() - timedelta(hours=24)
             queryset = queryset.filter(timestamp__gte=time_threshold)
@@ -108,9 +97,6 @@ class AlertDetailView(generics.RetrieveUpdateDestroyAPIView):
         return queryset
     
     def destroy(self, request, *args, **kwargs):
-        """
-        Only Admin can delete alerts
-        """
         if request.user.role != 'ADMIN':
             return Response(
                 {'error': 'You do not have permission to delete alerts. Only Admin can delete alerts.'},
@@ -119,9 +105,6 @@ class AlertDetailView(generics.RetrieveUpdateDestroyAPIView):
         return super().destroy(request, *args, **kwargs)
     
     def update(self, request, *args, **kwargs):
-        """
-        Security Guard cannot update alerts
-        """
         if request.user.role == 'SECURITY_GUARD':
             return Response(
                 {'error': 'You do not have permission to update alerts.'},
@@ -130,9 +113,6 @@ class AlertDetailView(generics.RetrieveUpdateDestroyAPIView):
         return super().update(request, *args, **kwargs)
     
     def partial_update(self, request, *args, **kwargs):
-        """
-        Security Guard cannot update alerts
-        """
         if request.user.role == 'SECURITY_GUARD':
             return Response(
                 {'error': 'You do not have permission to update alerts.'},
@@ -151,7 +131,7 @@ class AlertAcknowledgeView(views.APIView):
     
     When guard_id is provided, creates an incident with status ASSIGNED
     """
-    permission_classes = [IsAuthenticated, IsAdminOrIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrIncharge]
     
     def patch(self, request, pk):
         from django.contrib.auth import get_user_model
@@ -159,9 +139,8 @@ class AlertAcknowledgeView(views.APIView):
         
         User = get_user_model()
         
-        try:
-            alert = Alert.objects.get(pk=pk)
-        except Alert.DoesNotExist:
+        alert = scoped_alerts(request.user).filter(pk=pk).first()
+        if not alert:
             return Response(
                 {'error': 'Alert not found'},
                 status=status.HTTP_404_NOT_FOUND
@@ -172,17 +151,20 @@ class AlertAcknowledgeView(views.APIView):
             alert.status = serializer.validated_data['status']
             alert.save()
             
-            # Guard assignment is mandatory - create incident
             guard_email = serializer.validated_data['guard_email']
             comment = serializer.validated_data.get('comment', '')
             
             try:
-                guard = User.objects.get(email=guard_email, role='SECURITY_GUARD')
-                # Create incident with status ASSIGNED
-                incident = Incident.objects.create(
+                guard = User.objects.get(
+                    email=guard_email,
+                    role='SECURITY_GUARD',
+                    tenant_id=request.user.tenant_id,
+                )
+                Incident.objects.create(
                     alert_id=alert,
+                    tenant_id=alert.tenant_id,
                     assigned_to=guard,
-                    assigned_by=request.user,  # Track who assigned the incident
+                    assigned_by=request.user,
                     status='ASSIGNED',
                     notes=comment
                 )
@@ -211,14 +193,13 @@ class ActiveAlertsView(generics.ListAPIView):
     - Security Guard: Only recent active alerts (last 24 hours)
     """
     serializer_class = AlertSerializer
-    permission_classes = [IsAuthenticated, CanViewAlerts]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewAlerts]
     
     def get_queryset(self):
-        queryset = Alert.objects.select_related('camera_id').filter(
+        queryset = scoped_alerts(self.request.user).select_related('camera_id').filter(
             status='ACTIVE'
         )
         
-        # Security Guard: Only view recent alerts (last 24 hours)
         if self.request.user.role == 'SECURITY_GUARD':
             time_threshold = timezone.now() - timedelta(hours=24)
             queryset = queryset.filter(timestamp__gte=time_threshold)
@@ -234,11 +215,11 @@ class RecentAlertsView(generics.ListAPIView):
     - All authenticated users can view recent alerts
     """
     serializer_class = AlertSerializer
-    permission_classes = [IsAuthenticated, CanViewAlerts]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewAlerts]
     
     def get_queryset(self):
         time_threshold = timezone.now() - timedelta(hours=24)
-        return Alert.objects.select_related('camera_id').filter(
+        return scoped_alerts(self.request.user).select_related('camera_id').filter(
             timestamp__gte=time_threshold
         ).order_by('-timestamp')
 
@@ -250,12 +231,11 @@ class AlertDeleteView(views.APIView):
     Permissions:
     - Only Admin can delete alerts
     """
-    permission_classes = [IsAuthenticated, CanDeleteAlerts]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanDeleteAlerts]
     
     def delete(self, request, pk):
-        try:
-            alert = Alert.objects.get(pk=pk)
-        except Alert.DoesNotExist:
+        alert = scoped_alerts(request.user).filter(pk=pk).first()
+        if not alert:
             return Response(
                 {'error': 'Alert not found'},
                 status=status.HTTP_404_NOT_FOUND

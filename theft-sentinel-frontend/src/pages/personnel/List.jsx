@@ -1,6 +1,7 @@
 import { useState, useEffect, useRef } from 'react';
 import { useRecoilValue } from 'recoil';
 import { listUsers, deleteUser } from '../../api/auth';
+import { getBranchProfile, patchBranchProfile } from '../../api/tenants';
 import Table, { Pagination } from '../../components/Table';
 import { useNavigate, useLocation } from 'react-router-dom';
 import { PlusIcon } from '@heroicons/react/24/outline';
@@ -21,11 +22,41 @@ const List = () => {
   const [totalPages, setTotalPages] = useState(1);
   const { modalState, showSuccess, showError, hideModal } = useModal();
   const [deleteConfirmation, setDeleteConfirmation] = useState({ show: false, user: null });
+  const [branch, setBranch] = useState(null);
+  const [branchForm, setBranchForm] = useState({ cnic: '', phone: '' });
+  const [branchLoading, setBranchLoading] = useState(true);
+  const [branchSaving, setBranchSaving] = useState(false);
   const prevLocationRef = useRef(location.pathname);
 
   useEffect(() => {
     fetchUsers();
   }, [currentPage]);
+
+  useEffect(() => {
+    let cancelled = false;
+    const loadBranch = async () => {
+      if (authUser?.role !== 'ADMIN' && authUser?.role !== 'SECURITY_INCHARGE') {
+        setBranchLoading(false);
+        return;
+      }
+      setBranchLoading(true);
+      try {
+        const { data } = await getBranchProfile();
+        if (!cancelled) {
+          setBranch(data);
+          setBranchForm({ cnic: data.cnic || '', phone: data.phone || '' });
+        }
+      } catch {
+        if (!cancelled) setBranch(null);
+      } finally {
+        if (!cancelled) setBranchLoading(false);
+      }
+    };
+    loadBranch();
+    return () => {
+      cancelled = true;
+    };
+  }, [authUser?.role, authUser?.id]);
 
   // Refresh when navigating back from edit page
   useEffect(() => {
@@ -89,6 +120,31 @@ const List = () => {
 
   const handleDeleteCancel = () => {
     setDeleteConfirmation({ show: false, user: null });
+  };
+
+  const handleBranchSave = async (e) => {
+    e.preventDefault();
+    if (authUser?.role !== 'ADMIN') return;
+    setBranchSaving(true);
+    try {
+      const { data } = await patchBranchProfile({
+        cnic: branchForm.cnic.trim(),
+        phone: branchForm.phone.trim(),
+      });
+      setBranch(data);
+      setBranchForm({ cnic: data.cnic || '', phone: data.phone || '' });
+      showSuccess('Branch contact updated');
+    } catch (error) {
+      const d = error.response?.data;
+      const msg =
+        (typeof d?.error === 'string' && d.error) ||
+        (d?.cnic && (Array.isArray(d.cnic) ? d.cnic[0] : d.cnic)) ||
+        (d?.phone && (Array.isArray(d.phone) ? d.phone[0] : d.phone)) ||
+        'Failed to update branch contact';
+      showError(typeof msg === 'string' ? msg : String(msg));
+    } finally {
+      setBranchSaving(false);
+    }
   };
 
   const columns = [
@@ -176,6 +232,75 @@ const List = () => {
           <span>Add User</span>
         </button>
       </div>
+
+      {(authUser?.role === 'ADMIN' || authUser?.role === 'SECURITY_INCHARGE') && (
+        <div className="glass rounded-xl border border-dark-border p-6">
+          <h2 className="text-lg font-semibold text-dark-text-primary mb-1">Branch contact</h2>
+          <p className="text-sm text-dark-text-muted mb-4">
+            CNIC and phone for your branch (tenant). Format: 12345-1234567-1
+          </p>
+          {branchLoading ? (
+            <p className="text-sm text-dark-text-muted">Loading branch details…</p>
+          ) : branch ? (
+            <form onSubmit={handleBranchSave} className="grid grid-cols-1 md:grid-cols-2 gap-4 max-w-3xl">
+              <div>
+                <label className="block text-xs font-medium text-dark-text-secondary mb-1">Branch name</label>
+                <p className="text-sm text-dark-text-primary">{branch.name}</p>
+              </div>
+              <div>
+                <label className="block text-xs font-medium text-dark-text-secondary mb-1">Branch email</label>
+                <p className="text-sm text-dark-text-primary">{branch.email}</p>
+              </div>
+              <div>
+                <label htmlFor="branch-cnic" className="block text-xs font-medium text-dark-text-secondary mb-1">
+                  CNIC
+                </label>
+                <input
+                  id="branch-cnic"
+                  type="text"
+                  value={branchForm.cnic}
+                  onChange={(e) => setBranchForm((f) => ({ ...f, cnic: e.target.value }))}
+                  disabled={authUser?.role !== 'ADMIN'}
+                  className="w-full px-3 py-2 rounded-lg bg-dark-card border border-dark-border text-dark-text-primary disabled:opacity-60"
+                  placeholder="12345-1234567-1"
+                />
+              </div>
+              <div>
+                <label htmlFor="branch-phone" className="block text-xs font-medium text-dark-text-secondary mb-1">
+                  Phone
+                </label>
+                <input
+                  id="branch-phone"
+                  type="text"
+                  value={branchForm.phone}
+                  onChange={(e) => setBranchForm((f) => ({ ...f, phone: e.target.value }))}
+                  disabled={authUser?.role !== 'ADMIN'}
+                  className="w-full px-3 py-2 rounded-lg bg-dark-card border border-dark-border text-dark-text-primary disabled:opacity-60"
+                  placeholder="Contact number"
+                />
+              </div>
+              {authUser?.role === 'ADMIN' && (
+                <div className="md:col-span-2">
+                  <button
+                    type="submit"
+                    disabled={branchSaving}
+                    className="px-4 py-2 bg-ai-blue text-white rounded-md hover:bg-ai-blueDark text-sm font-medium disabled:opacity-50"
+                  >
+                    {branchSaving ? 'Saving…' : 'Save branch contact'}
+                  </button>
+                </div>
+              )}
+              {authUser?.role === 'SECURITY_INCHARGE' && (
+                <p className="md:col-span-2 text-xs text-dark-text-muted">
+                  Only the Branch Admin can edit CNIC and phone.
+                </p>
+              )}
+            </form>
+          ) : (
+            <p className="text-sm text-dark-text-muted">Could not load branch details.</p>
+          )}
+        </div>
+      )}
 
       <Table columns={columns} data={users} loading={loading} />
 

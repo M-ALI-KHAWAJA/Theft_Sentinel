@@ -23,7 +23,7 @@ urlpatterns = [
     path('refresh/', TokenRefreshView.as_view(), name='token_refresh'),
     path('logout/', LogoutView.as_view(), name='logout'),
     
-    # Password Reset (Admin Only)
+    # Legacy forgot-password URL (disabled — returns 403; use /api/password-reset-request/)
     path('forgot-password/', ForgotPasswordView.as_view(), name='forgot_password'),
     path('reset-password/', ResetPasswordView.as_view(), name='reset_password'),
     

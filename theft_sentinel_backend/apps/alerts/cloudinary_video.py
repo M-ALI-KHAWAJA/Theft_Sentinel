@@ -54,9 +54,13 @@ def _ensure_config() -> bool:
     return True
 
 
-def upload_video_to_cloudinary(file_path: str) -> Tuple[Optional[str], Optional[str]]:
+def upload_video_to_cloudinary(
+    file_path: str, tenant_id: Optional[str] = None
+) -> Tuple[Optional[str], Optional[str]]:
     """
     Upload a local video file to Cloudinary.
+
+    When tenant_id is set, files are stored under folder tenant_{id} (single Cloudinary account).
 
     Returns:
         (secure_url, public_id) or (None, None) on skip/failure.
@@ -64,7 +68,10 @@ def upload_video_to_cloudinary(file_path: str) -> Tuple[Optional[str], Optional[
     if not _ensure_config():
         return None, None
     try:
-        response = cloudinary.uploader.upload(file_path, resource_type="video")
+        upload_kwargs = {"resource_type": "video"}
+        if tenant_id:
+            upload_kwargs["folder"] = f"tenant_{tenant_id}"
+        response = cloudinary.uploader.upload(file_path, **upload_kwargs)
         return response.get("secure_url"), response.get("public_id")
     except Exception:
         logger.exception("Cloudinary video upload failed")

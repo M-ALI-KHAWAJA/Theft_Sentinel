@@ -41,11 +41,57 @@ RBAC Model:
 from rest_framework import permissions
 
 
+class IsSuperAdmin(permissions.BasePermission):
+    """Platform operator — no branch tenant."""
+
+    def has_permission(self, request, view):
+        return (
+            request.user
+            and request.user.is_authenticated
+            and getattr(request.user, 'role', None) == 'SUPER_ADMIN'
+        )
+
+
+class IsSuperAdminOrApprovedBranchUser(permissions.BasePermission):
+    """Super Admin or an approved branch user (Admin / Incharge / Guard)."""
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        if getattr(request.user, 'role', None) == 'SUPER_ADMIN':
+            return True
+        return IsApprovedBranchUser().has_permission(request, view)
+
+
+class IsApprovedBranchUser(permissions.BasePermission):
+    """
+    Authenticated branch user with an approved tenant.
+    SUPER_ADMIN must use super-admin APIs only.
+    """
+
+    message = 'Branch access denied or registration pending approval.'
+
+    def has_permission(self, request, view):
+        u = request.user
+        if not u or not u.is_authenticated:
+            return False
+        if getattr(u, 'role', None) == 'SUPER_ADMIN':
+            return False
+        tenant = getattr(u, 'tenant', None)
+        if tenant is None:
+            return False
+        return tenant.status == 'APPROVED'
+
+
 class IsAdmin(permissions.BasePermission):
     """Permission class for Admin users only"""
     
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.role == 'ADMIN'
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role == 'ADMIN'
+        )
 
 
 class IsSecurityIncharge(permissions.BasePermission):
@@ -104,7 +150,11 @@ class CanManageCameras(permissions.BasePermission):
     def has_permission(self, request, view):
         if request.method in permissions.SAFE_METHODS:
             return request.user and request.user.is_authenticated
-        return request.user and request.user.is_authenticated and request.user.role == 'ADMIN'
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role == 'ADMIN'
+        )
 
 
 class CanViewAlerts(permissions.BasePermission):
@@ -196,11 +246,15 @@ class CanDeleteReports(permissions.BasePermission):
 
 class CanManageUsers(permissions.BasePermission):
     """
-    Only Admin can manage users (CRUD operations)
+    Only branch Admin can manage users (CRUD operations)
     """
     
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and request.user.role == 'ADMIN'
+        return (
+            request.user
+            and request.user.is_authenticated
+            and request.user.role == 'ADMIN'
+        )
 
 
 class CanChangeOwnPassword(permissions.BasePermission):

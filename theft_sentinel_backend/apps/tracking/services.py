@@ -63,7 +63,7 @@ class TrackingService:
         return []
     
     @staticmethod
-    def track_person_across_cameras(person_id, time_window_minutes=60):
+    def track_person_across_cameras(person_id, time_window_minutes=60, tenant_id=None):
         """
         Track a person across multiple cameras (stub for MVP)
         
@@ -82,8 +82,10 @@ class TrackingService:
         
         records = TrackingRecord.objects.filter(
             person_id=person_id,
-            timestamp__gte=time_threshold
+            timestamp__gte=time_threshold,
         ).select_related('camera_id').order_by('timestamp')
+        if tenant_id is not None:
+            records = records.filter(camera_id__tenant_id=tenant_id)
         
         tracking_path = []
         for record in records:

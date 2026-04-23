@@ -178,7 +178,14 @@ const Landing = () => {
                 <ShieldCheckIcon className="h-8 w-8 text-ai-blue" />
                 <span className="font-bold text-xl tracking-tight">Theft<span className="text-ai-blue">Sentinel</span></span>
               </div>
-              <div className="hidden md:block">
+              <div className="hidden md:flex items-center gap-2">
+                <button
+                  type="button"
+                  onClick={() => navigate('/register-branch')}
+                  className="px-4 py-2 rounded-md text-dark-text-secondary hover:text-ai-blue text-sm font-medium"
+                >
+                  Register branch
+                </button>
                 <button 
                   onClick={() => navigate('/login')}
                   className="px-4 py-2 rounded-md bg-ai-blue/10 text-ai-blue hover:bg-ai-blue hover:text-dark-bg transition-all duration-300 font-medium text-sm"
@@ -505,7 +512,7 @@ const Landing = () => {
               Experience the future of intelligent surveillance and theft prevention.
             </p>
             <button
-              onClick={() => navigate('/login')}
+              onClick={() => navigate('/register-branch')}
               className="group relative px-12 py-5 bg-ai-blue text-dark-bg font-bold text-lg rounded-full overflow-hidden
                        hover:bg-cyan-400 transition-all duration-300 shadow-[0_0_30px_rgba(0,212,255,0.4)]
                        transform hover:scale-105"

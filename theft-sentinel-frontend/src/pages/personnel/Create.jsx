@@ -156,30 +156,38 @@ const Create = () => {
     } catch (error) {
       console.error('❌ Error creating user:', error);
       console.error('❌ Error response:', error.response?.data);
-      
-      // Handle validation errors
+
       const errorData = error.response?.data;
+      const pick = (v) => (Array.isArray(v) ? v[0] : v);
       let errorMsg = 'Failed to create user';
-      
+
       if (errorData) {
-        // Handle Admin uniqueness error
-        if (errorData.role && Array.isArray(errorData.role)) {
-          errorMsg = errorData.role[0] || 'Admin role already exists. Only one Admin is allowed.';
-        } else if (errorData.username) {
-          errorMsg = `Username: ${errorData.username[0]}`;
-        } else if (errorData.email) {
-          errorMsg = `Email: ${errorData.email[0]}`;
-        } else if (errorData.password) {
-          errorMsg = `Password: ${errorData.password[0]}`;
-        } else if (errorData.detail) {
-          errorMsg = errorData.detail;
-        } else if (errorData.error) {
-          errorMsg = errorData.error;
-        } else if (typeof errorData === 'string') {
-          errorMsg = errorData;
+        const nextFieldErrors = { username: '', email: '', password: '', password2: '' };
+        if (errorData.username) nextFieldErrors.username = pick(errorData.username);
+        if (errorData.email) nextFieldErrors.email = pick(errorData.email);
+        if (errorData.password) nextFieldErrors.password = pick(errorData.password);
+        if (nextFieldErrors.username || nextFieldErrors.email || nextFieldErrors.password) {
+          setErrors((prev) => ({ ...prev, ...nextFieldErrors }));
+          setTouched((prev) => ({
+            ...prev,
+            username: !!nextFieldErrors.username,
+            email: !!nextFieldErrors.email,
+            password: !!nextFieldErrors.password,
+          }));
         }
+        errorMsg =
+          nextFieldErrors.username ||
+          nextFieldErrors.email ||
+          nextFieldErrors.password ||
+          (errorData.role && Array.isArray(errorData.role)
+            ? errorData.role[0] || 'Admin role already exists. Only one Admin is allowed.'
+            : null) ||
+          (typeof errorData.detail === 'string' ? errorData.detail : pick(errorData.detail)) ||
+          errorData.error ||
+          (typeof errorData === 'string' ? errorData : null) ||
+          errorMsg;
       }
-      
+
       showError(errorMsg);
     } finally {
       setLoading(false);

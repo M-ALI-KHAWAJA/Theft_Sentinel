@@ -59,6 +59,9 @@ const GuardDashboard = () => {
             <h1 className="text-4xl font-bold text-dark-text-primary mb-2">
               Welcome, <span className="text-gradient-ai">{user?.username || 'Guard'}</span>
             </h1>
+            {(user?.tenant_display || user?.tenant_name) && (
+              <p className="text-sm text-ai-blue/90">{user.tenant_display || user.tenant_name}</p>
+            )}
             <p className="text-dark-text-muted">Security Operations Dashboard</p>
           </div>
         </div>

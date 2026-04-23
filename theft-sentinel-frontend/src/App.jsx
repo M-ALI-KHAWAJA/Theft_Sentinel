@@ -20,6 +20,10 @@ function AppContent() {
       const currentPath = window.location.pathname;
       const isPublicRoute = currentPath === '/' || 
                            currentPath === '/login' || 
+                           currentPath === '/register-branch' ||
+                           currentPath === '/create-super-admin' ||
+                           currentPath === '/super-admin/reset-password' ||
+                           currentPath === '/tenant/reset-password-request' ||
                            currentPath.startsWith('/forgot-password') || 
                            currentPath.startsWith('/reset-password');
 
