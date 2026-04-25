@@ -10,6 +10,7 @@ from datetime import timedelta
 from .models import TrackingRecord
 from .serializers import TrackingRecordSerializer, TrackingRecordCreateSerializer
 from .services import TrackingService
+from rest_framework.exceptions import NotFound
 
 
 class TrackingRecordListCreateView(generics.ListCreateAPIView):
@@ -21,6 +22,18 @@ class TrackingRecordListCreateView(generics.ListCreateAPIView):
         if self.request.method == 'POST':
             return TrackingRecordCreateSerializer
         return TrackingRecordSerializer
+    
+    def list(self, request, *args, **kwargs):
+        try:
+            return super().list(request, *args, **kwargs)
+        except NotFound:
+            # Handle out-of-bounds pagination gracefully
+            return Response({
+                'count': self.get_queryset().count(),
+                'next': None,
+                'previous': None,
+                'results': []
+            })
     
     def get_queryset(self):
         queryset = TrackingRecord.objects.select_related('camera_id').all()
@@ -119,3 +132,26 @@ class TrackingIngestView(views.APIView):
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+
+class TrackingStatsView(views.APIView):
+    """Return aggregate tracking statistics for the dashboard."""
+    permission_classes = [IsAuthenticated]
+
+    def get(self, request):
+        total = TrackingRecord.objects.count()
+        unique_persons = (
+            TrackingRecord.objects
+            .values_list('person_id', flat=True)
+            .distinct()
+            .count() if total else 0
+        )
+
+        # Recent activity (last 24 hours)
+        since = timezone.now() - timedelta(hours=24)
+        recent = TrackingRecord.objects.filter(timestamp__gte=since).count()
+
+        return Response({
+            'total_records': total,
+            'unique_persons': unique_persons,
+            'recent_24h': recent,
+        })

@@ -87,9 +87,9 @@ const ControlRoom = () => {
   if (loading && cameras.length === 0) {
     return (
       <div className="space-y-6">
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
-          {[...Array(6)].map((_, i) => (
-            <div key={i} className="h-64 skeleton rounded-xl"></div>
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+          {[...Array(4)].map((_, i) => (
+            <div key={i} className="h-96 skeleton rounded-xl"></div>
           ))}
         </div>
       </div>
@@ -216,7 +216,7 @@ const ControlRoom = () => {
           <p className="text-dark-text-muted">Try adjusting your filters or check back later.</p>
         </div>
       ) : (
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-6">
+        <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           {filteredCameras.map((camera) => (
             <CameraCardWithAI
               key={camera.id}

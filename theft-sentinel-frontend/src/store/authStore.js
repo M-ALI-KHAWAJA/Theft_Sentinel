@@ -47,6 +47,7 @@ export const hasPermission = (user, permission) => {
       'view_cameras',
       'view_tracking',
       'view_personnel',
+      'control_ai_monitoring',   // Security Incharge can start / stop AI monitors
     ],
     GUARD: [
       'view_my_incidents',

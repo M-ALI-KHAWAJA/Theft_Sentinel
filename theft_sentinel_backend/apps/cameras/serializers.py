@@ -11,7 +11,10 @@ class CameraSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = Camera
-        fields = ['id', 'name', 'rtsp_url', 'location', 'zone', 'status', 'created_at']
+        fields = [
+            'id', 'name', 'rtsp_url', 'location', 'zone',
+            'status', 'created_at', 'ai_monitoring_enabled',
+        ]
         read_only_fields = ['id', 'created_at']
     
     def validate_status(self, value):

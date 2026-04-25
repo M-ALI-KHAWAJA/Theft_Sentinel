@@ -24,10 +24,18 @@ class Camera(models.Model):
     
     # Feed health tracking (feed-driven status) - OBSERVES feed without modifying pipeline
     last_feed_timestamp = models.DateTimeField(
-        null=True, 
-        blank=True, 
+        null=True,
+        blank=True,
         db_index=True,
         help_text="Last time feed was confirmed active (updated by external feed checker)"
+    )
+
+    # AI monitoring persistence — stored in MongoDB so the toggle survives
+    # server restarts and full page reloads, exactly like camera status does.
+    ai_monitoring_enabled = models.BooleanField(
+        default=False,
+        db_index=True,
+        help_text="Whether AI continuous monitoring is enabled for this camera"
     )
     
     class Meta:

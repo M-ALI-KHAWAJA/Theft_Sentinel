@@ -54,3 +54,9 @@ htmlcov/
 # !*/migrations/__init__.py
 
 /logs
+
+# AI pipeline — local ReID / FAISS on-disk state (never commit)
+ai_pipeline/db_state/
+# AI pipeline — model weights (large binaries tracked separately)
+ai_pipeline/*.pt
+ai_pipeline/*.pth

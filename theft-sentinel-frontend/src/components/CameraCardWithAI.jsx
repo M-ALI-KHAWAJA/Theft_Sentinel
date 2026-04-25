@@ -1,9 +1,16 @@
 import { VideoCameraIcon, PencilIcon, TrashIcon, EyeIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
-import CameraFeed from './CameraFeed';
+import { useRecoilValue } from 'recoil';
+import CameraFeedWithOverlay from './CameraFeedWithOverlay';
 import { useContinuousMonitor } from '../hooks/useContinuousMonitor';
+import { authUserState, hasPermission } from '../store/authStore';
 
 const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, showFeed = false, showActions = false }) => {
-  
+  // ── Auth: determine if this user can control AI monitoring ────────────────
+  // ADMIN has 'all' permissions; SECURITY_INCHARGE has 'control_ai_monitoring'.
+  // GUARD is read-only — they can see the toggle state but cannot change it.
+  const currentUser  = useRecoilValue(authUserState);
+  const canControlAI = hasPermission(currentUser, 'control_ai_monitoring');
+
   const {
     isMonitoring,
     stats,
@@ -40,24 +47,26 @@ const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, showFeed = fal
   };
 
   const handleToggleAI = () => {
-    if (isMonitoring) {
-      stop();
-    } else {
-      start();
-    }
+    if (!canControlAI) return;   // Guard: read-only
+    if (isMonitoring) stop(); else start();
   };
 
   return (
     <div
       className={`rounded-xl overflow-hidden border-l-4 ${getCardBorderColor()} ${getCardBgColor()} border border-dark-border hover:shadow-glow-ai transition-all`}
     >
-      {/* Live Feed Preview */}
+      {/* Live Feed Preview — with canvas bounding-box overlay when AI is on */}
       {showFeed && camera.status === 'ONLINE' && (
-        <div 
+        <div
           onClick={() => onViewFeed && onViewFeed(camera)}
           className="cursor-pointer"
         >
-          <CameraFeed cameraId={camera.id} height="200px" />
+          <CameraFeedWithOverlay
+            cameraId={camera.id}
+            height="280px"
+            enableOverlay={isMonitoring}
+            viewMode="grid"
+          />
         </div>
       )}
       
@@ -112,11 +121,19 @@ const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, showFeed = fal
           <div className="mt-4 pt-4 border-t border-dark-border">
             {/* AI Monitoring Toggle */}
             <div className="flex items-center justify-between mb-3">
-              <span className="text-sm font-medium text-dark-text-secondary">AI Monitoring</span>
+              <div className="flex flex-col">
+                <span className="text-sm font-medium text-dark-text-secondary">AI Monitoring</span>
+                {!canControlAI && (
+                  <span className="text-xs text-dark-text-muted">View only</span>
+                )}
+              </div>
               <button
                 onClick={handleToggleAI}
-                disabled={aiLoading}
-                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors focus:outline-none focus:ring-2 focus:ring-ai-blue focus:ring-offset-2 disabled:opacity-50 ${
+                disabled={aiLoading || !canControlAI}
+                title={!canControlAI ? 'You do not have permission to control AI monitoring' : undefined}
+                className={`relative inline-flex h-6 w-11 items-center rounded-full transition-colors
+                  focus:outline-none focus:ring-2 focus:ring-ai-blue focus:ring-offset-2
+                  disabled:opacity-50 ${!canControlAI ? 'cursor-not-allowed' : 'cursor-pointer'} ${
                   isMonitoring ? 'bg-status-success' : 'bg-dark-border'
                 }`}
               >
@@ -157,19 +174,21 @@ const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, showFeed = fal
                   <div>
                     <span className="text-dark-text-muted">Persons:</span>
                     <span className="ml-1 font-semibold text-dark-text-primary">
-                      {typeof lastResult.persons === 'number' ? lastResult.persons : 0}
+                      {lastResult.frame_metadata?.num_persons ?? 0}
                     </span>
                   </div>
                   <div>
                     <span className="text-dark-text-muted">Objects:</span>
                     <span className="ml-1 font-semibold text-dark-text-primary">
-                      {typeof lastResult.objects === 'number' ? lastResult.objects : 0}
+                      {lastResult.frame_metadata?.num_detections ?? 0}
                     </span>
                   </div>
                   <div>
                     <span className="text-dark-text-muted">Tracks:</span>
                     <span className="ml-1 font-semibold text-dark-text-primary">
-                      {typeof lastResult.tracks === 'number' ? lastResult.tracks : 0}
+                      {Array.isArray(lastResult.tracks)
+                        ? lastResult.tracks.length
+                        : (lastResult.frame_metadata?.num_tracks ?? 0)}
                     </span>
                   </div>
                 </div>

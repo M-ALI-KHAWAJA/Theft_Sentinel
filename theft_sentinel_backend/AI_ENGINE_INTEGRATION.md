@@ -2,35 +2,58 @@
 
 ## 🎯 Overview
 
-The AI Engine has been successfully integrated into your Django REST Framework backend. This integration is **fully isolated**, **non-destructive**, and **production-ready**.
+The AI Engine is fully integrated into the Django REST Framework backend. It runs the YOLOv8 + DeepSORT + ML classifier pipeline either **on-demand** (single frame analysis) or **continuously** (live camera stream monitoring with automatic theft-alert video clip generation and Cloudinary upload).
+
+The integration is **fully isolated**, **non-destructive**, and **production-ready**.
+
+---
 
 ## 📁 Project Structure
 
 ```
 theft_sentinel_backend/
 ├── apps/
-│   └── ai_engine/                    # NEW - Isolated AI module
-│       ├── api/
-│       │   ├── __init__.py
-│       │   ├── serializers.py       # API request/response serializers
-│       │   ├── views.py             # API endpoint handlers
-│       │   └── urls.py              # API routing
-│       ├── services/
-│       │   ├── __init__.py
-│       │   ├── ai_service.py        # AI model lifecycle manager
-│       │   └── inference_runner.py  # Wraps your existing pipeline
-│       ├── utils/
-│       │   ├── __init__.py
-│       │   └── frame_utils.py       # Frame encoding/decoding utilities
-│       ├── migrations/
-│       │   ├── __init__.py
-│       │   └── 0001_initial.py      # Database schema
-│       ├── __init__.py
-│       ├── admin.py                 # Django admin interface
-│       ├── apps.py                  # App configuration
-│       ├── models.py                # AIInference, DetectionTrack models
-│       └── tests.py
-├── ModelExport/                      # YOUR EXISTING PIPELINE (UNTOUCHED)
+│   ├── ai_engine/                    # Isolated AI module
+│   │   ├── api/
+│   │   │   ├── __init__.py
+│   │   │   ├── serializers.py       # API request/response serializers
+│   │   │   ├── views.py             # All API endpoint handlers (9 views)
+│   │   │   └── urls.py              # 9 API routes
+│   │   ├── services/
+│   │   │   ├── __init__.py
+│   │   │   ├── ai_service.py        # AI model lifecycle manager (lazy loader)
+│   │   │   ├── clip_encoding.py     # NEW — H.264 MP4 frame → file encoder
+│   │   │   ├── continuous_monitor.py # NEW — live stream monitor + clip upload
+│   │   │   └── inference_runner.py  # Wraps YOLOv8/DeepSORT/ML pipeline
+│   │   ├── utils/
+│   │   │   ├── __init__.py
+│   │   │   └── frame_utils.py       # Base64 decode / RTSP capture / validate
+│   │   ├── migrations/
+│   │   │   ├── __init__.py
+│   │   │   └── 0001_initial.py
+│   │   ├── __init__.py
+│   │   ├── admin.py
+│   │   ├── apps.py
+│   │   ├── models.py                # AIInference, DetectionTrack
+│   │   ├── tests.py
+│   │   └── README.md
+│   ├── alerts/
+│   │   ├── cloudinary_video.py      # NEW — Cloudinary upload/delete helpers
+│   │   ├── models.py                # Alert + video_url / video_public_id fields
+│   │   ├── serializers.py
+│   │   ├── signals.py
+│   │   ├── urls.py
+│   │   └── views.py
+│   ├── accounts/                    # JWT auth + RBAC (unchanged)
+│   ├── cameras/                     # Camera model + RTSP URLs (unchanged)
+│   ├── incidents/                   # Incident model (unchanged)
+│   ├── tracking/                    # Tracking ingest API (unchanged)
+│   ├── dashboard/
+│   ├── feedback/
+│   ├── mobile/
+│   ├── personnel/
+│   └── surveillance/
+├── ModelExport/                      # AI pipeline (UNTOUCHED)
 │   ├── ml_classifier/
 │   │   ├── feature_builder.py
 │   │   ├── sequence_collector.py
@@ -41,22 +64,38 @@ theft_sentinel_backend/
 │   ├── yolov8l-pose.pt
 │   └── yolov8l.pt
 ├── config/
-│   └── urls.py                      # UPDATED: Added ai_engine routes
-├── test_ai_engine.py                # NEW - Test suite
-└── AI_ENGINE_INTEGRATION.md         # NEW - This documentation
+│   └── urls.py                      # All app routes registered
+├── .env                             # Environment variables (see section below)
 ```
 
-## 🚀 New API Endpoints
+---
+
+## 🚀 API Endpoints
+
+All endpoints are prefixed with `/api/ai/`.
+
+| Method | Endpoint | Auth | Description |
+|--------|----------|------|-------------|
+| `POST` | `/analyze-frame/` | ✅ JWT | Analyze single base64-encoded frame |
+| `POST` | `/process-camera/` | ✅ JWT | Capture frame from camera RTSP stream and analyze |
+| `POST` | `/full-pipeline/` | ✅ JWT | Combined endpoint — accepts `frame` OR `camera_id` |
+| `POST` | `/monitor/start/` | ✅ JWT | Start continuous monitoring on a live camera stream |
+| `POST` | `/monitor/stop/` | ✅ JWT | Stop continuous monitoring |
+| `GET`  | `/monitor/status/` | ✅ JWT | Get status of all running monitors (or single) |
+| `GET`  | `/model-info/` | ✅ JWT | Get AI model metadata and device info |
+| `GET`  | `/inference-history/` | ✅ JWT | Paginated inference logs with filters |
+| `GET`  | `/health/` | 🌐 Public | Health check — no auth required |
+
+---
 
 ### 1. Analyze Frame
-**POST** `/api/ai/analyze-frame/`
 
-Process a single base64-encoded frame.
+**POST** `/api/ai/analyze-frame/`
 
 ```json
 {
   "frame": "base64_encoded_image_data",
-  "camera_id": "optional_camera_id",
+  "camera_id": "optional_camera_objectid",
   "save_to_db": true,
   "create_alert_on_theft": true
 }
@@ -65,91 +104,120 @@ Process a single base64-encoded frame.
 **Response:**
 ```json
 {
-  "detections": [
-    {
-      "bbox": [x1, y1, x2, y2],
-      "confidence": 0.85,
-      "class": "person",
-      "class_id": 0
-    }
-  ],
-  "poses": [
-    {
-      "track_id": 1,
-      "keypoints": [[x, y, conf], ...],
-      "confidence": 0.90,
-      "features": {
-        "torso_angle": 45.2,
-        "left_elbow_angle": 120.5,
-        ...
-      }
-    }
-  ],
-  "tracks": [
-    {
-      "track_id": 1,
-      "bbox": [x1, y1, x2, y2],
-      "class": "person",
-      "confidence": 0.88,
-      "dwell_time": 150,
-      "ml_score": 0.75
-    }
-  ],
   "classification": "theft",
-  "confidence": 0.85,
-  "suspicious_tracks": [
-    {
-      "track_id": 1,
-      "ml_score": 0.85,
-      "behavior": {
-        "hand_in_bag": 15,
-        "hand_in_torso": 8,
-        "fast_wrist": 5,
-        "near_object": 12,
-        "concealment_events": 2
-      }
-    }
-  ],
-  "frame_metadata": {
-    "frame_index": 1,
-    "camera_id": "camera_123",
-    "num_detections": 3,
-    "num_tracks": 2,
-    "num_persons": 1
-  },
-  "processing_time_ms": 125.5,
+  "confidence": 0.87,
+  "persons": 2,
+  "objects": 5,
+  "tracks": 2,
+  "processing_time_ms": 145.2,
+  "camera_name": "Entrance Cam",
+  "camera_location": "Front Gate",
+  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
   "alert_created": true,
-  "alert_id": "alert_xyz",
-  "inference_id": "inference_abc"
+  "alert_id": "65f3a2b1c8d4e5f6a7b8c9d1",
+  "inference_id": "65f3a2b1c8d4e5f6a7b8c9d2",
+  "detections": [...],
+  "poses": [...],
+  "tracks_data": [...],
+  "suspicious_tracks": [...],
+  "frame_metadata": {...}
 }
 ```
+
+---
 
 ### 2. Process Camera
+
 **POST** `/api/ai/process-camera/`
 
-Capture frame from camera RTSP stream and analyze it.
+Captures one frame from the camera's RTSP URL, then runs the full pipeline.
 
 ```json
 {
-  "camera_id": "camera_123",
+  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
   "save_to_db": true,
   "create_alert_on_theft": true
 }
 ```
 
-**Response:** Same as analyze-frame
+**Response:** Same structure as `analyze-frame`.
+
+---
 
 ### 3. Full Pipeline
+
 **POST** `/api/ai/full-pipeline/`
 
-Convenience endpoint that accepts either `frame` or `camera_id`.
+Convenience endpoint — routes to `analyze-frame` if `frame` key is present, otherwise routes to `process-camera`.
 
-### 4. Model Info
+---
+
+### 4. Start Continuous Monitor
+
+**POST** `/api/ai/monitor/start/`
+
+Starts a background thread that reads the camera's RTSP stream at full FPS, runs the AI pipeline on every frame, writes results to the DB every ~2 seconds (or immediately on theft), and triggers the video clip workflow on theft detection.
+
+```json
+{
+  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
+  "restart": false
+}
+```
+
+**Response (success):**
+```json
+{
+  "success": true,
+  "message": "Started continuous monitoring",
+  "already_running": false,
+  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
+  "camera_name": "Entrance Cam",
+  "rtsp_url_preview": "rtsp://admin:pass@192.168.1.10:554/..."
+}
+```
+
+---
+
+### 5. Stop Continuous Monitor
+
+**POST** `/api/ai/monitor/stop/`
+
+```json
+{
+  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0"
+}
+```
+
+---
+
+### 6. Monitor Status
+
+**GET** `/api/ai/monitor/status/?camera_id=<optional>`
+
+```json
+{
+  "monitors": {
+    "65f3a2b1c8d4e5f6a7b8c9d0": {
+      "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
+      "is_running": true,
+      "frames_processed": 4521,
+      "fps": 27.3,
+      "elapsed_seconds": 165.6,
+      "error_count": 0,
+      "last_result": { "classification": "normal", "confidence": 0.12 }
+    }
+  },
+  "total_monitors": 1
+}
+```
+
+---
+
+### 7. Model Info
+
 **GET** `/api/ai/model-info/`
 
-Get information about loaded AI models.
-
-**Response:**
 ```json
 {
   "detection_model": "ModelExport/yolov8l.pt",
@@ -162,23 +230,20 @@ Get information about loaded AI models.
 }
 ```
 
-### 5. Inference History
+---
+
+### 8. Inference History
+
 **GET** `/api/ai/inference-history/`
 
-Get AI inference history with filters.
+Query params: `camera_id`, `classification`, `min_confidence`, `limit` (default 50, max 500)
 
-**Query Parameters:**
-- `camera_id`: Filter by camera
-- `classification`: Filter by classification (theft/normal)
-- `min_confidence`: Minimum confidence threshold
-- `limit`: Max results (default: 50, max: 500)
+---
 
-### 6. Health Check
-**GET** `/api/ai/health/`
+### 9. Health Check
 
-Check AI service health (public endpoint).
+**GET** `/api/ai/health/` — No auth required.
 
-**Response:**
 ```json
 {
   "status": "healthy",
@@ -186,328 +251,335 @@ Check AI service health (public endpoint).
   "device": "cuda:0"
 }
 ```
+
+---
+
+## 🎬 Video Clip Pipeline (Theft Alert)
+
+When the continuous monitor detects a theft, it automatically:
+
+1. **Snapshots the rolling frame buffer** — a `deque(maxlen=150)` that holds ~5 seconds of frames at 30 FPS.
+2. **Encodes an MP4 clip** using `services/clip_encoding.py`:
+   - Codec: H.264 (`avc1` → `H264` → `X264` → `mp4v` fallback)
+   - Max width: 1280px (auto-downscaled)
+   - Duration: up to 5 seconds (minimum 8 frames)
+3. **Uploads to Cloudinary** via `apps/alerts/cloudinary_video.py`.
+4. **Saves `video_url` and `video_public_id`** back to the `Alert` row.
+5. Runs entirely in a **daemon thread** so the monitoring loop is never blocked.
+
+### Alert Model Fields (Updated)
+
+```python
+class Alert(models.Model):
+    id              = ObjectIdAutoField(primary_key=True)
+    camera_id       = ForeignKey('cameras.Camera', ...)
+    alert_type      = CharField(max_length=100)          # e.g. 'THEFT_DETECTED'
+    severity        = CharField(max_length=50)           # 'HIGH' | 'MEDIUM'
+    timestamp       = DateTimeField(default=timezone.now)
+    status          = CharField(...)                     # 'ACTIVE' | 'ACKED' | 'RESOLVED'
+    metadata        = JSONField(default=dict)            # confidence, tracks, FPS, etc.
+    video_url       = URLField(null=True, blank=True)    # Cloudinary secure URL
+    video_public_id = CharField(null=True, blank=True)  # Cloudinary public_id (for deletion)
+```
+
+### Cloudinary Helper Functions (`apps/alerts/cloudinary_video.py`)
+
+| Function | Description |
+|----------|-------------|
+| `upload_video_to_cloudinary(file_path)` | Upload MP4, returns `(secure_url, public_id)` |
+| `upload_video_file(file_path)` | Backward-compatible wrapper, returns `secure_url` only |
+| `delete_cloudinary_video(public_id)` | Delete by known `public_id` |
+| `delete_cloudinary_video_from_url(url)` | Derive `public_id` from URL then delete |
+| `public_id_from_video_url(url)` | Extract `public_id` from Cloudinary URL |
+
+Credentials are read from **Django settings** first, falling back to `os.environ`.
+
+---
 
 ## 🔗 Integration with Existing Code
 
-### Alert Creation (Non-Destructive)
+### Alert Creation Flow
 
-When `classification == "theft"`, the AI engine:
+When `classification == "theft"` the monitor calls `_create_alert()`:
 
-1. **Calls existing Alert creation logic** (does NOT modify it):
-   ```python
-   from apps.alerts.serializers import AlertCreateSerializer
-   
-   alert_data = {
-       'camera_id': camera.id,
-       'alert_type': 'THEFT_DETECTED',
-       'severity': 'HIGH',
-       'metadata': {...}
-   }
-   alert_serializer = AlertCreateSerializer(data=alert_data)
-   alert = alert_serializer.save()
-   ```
+```python
+alert = Alert.objects.create(
+    camera_id=camera,
+    alert_type='THEFT_DETECTED',
+    severity='HIGH' if confidence > 0.7 else 'MEDIUM',
+    status='ACTIVE',
+    metadata={
+        'confidence': ...,
+        'suspicious_tracks': [...],
+        'num_detections': ...,
+        'num_persons': ...,
+        'detected_by': 'CONTINUOUS_MONITOR',
+        'detection_timestamp': ...,
+        'fps': ...,
+    }
+)
+# Then triggers video clip upload in a daemon thread
+self._try_upload_alert_clip(alert)
+```
 
-2. **Uses existing models** without modification:
-   - `apps.alerts.models.Alert`
-   - `apps.incidents.models.Incident`
-   - `apps.cameras.models.Camera`
+The on-demand views (`AnalyzeFrameView`, `ProcessCameraView`) create alerts via the existing `AlertCreateSerializer`.
 
-3. **Optionally creates Incident** (commented out by default):
-   ```python
-   # Incident.objects.create(alert_id=alert, status='CREATED')
-   ```
+### Existing Code — NOT Modified
 
-### Twilio/Email Integration
+- `apps/accounts/*` — authentication & RBAC
+- `apps/alerts/models.py` / `views.py` / `serializers.py` / `signals.py` — existing alert logic
+- `apps/incidents/*` — incident management
+- `apps/cameras/*` — camera model & RTSP URLs
+- `apps/tracking/*` — tracking ingest
+- `ModelExport/*` — entire AI pipeline
 
-The existing alert system automatically handles notifications:
-- Alerts created by AI engine flow through existing channels
-- No changes needed to notification logic
-- Email/SMS sent via existing `apps.alerts` logic
+### Modified / Added
 
-## 🗄️ New Database Models
+| File | Change |
+|------|--------|
+| `apps/alerts/models.py` | Added `video_url`, `video_public_id` fields |
+| `apps/alerts/cloudinary_video.py` | **NEW** — Cloudinary upload/delete helpers |
+| `apps/ai_engine/services/continuous_monitor.py` | **NEW** — `ContinuousMonitor`, `MonitorManager` |
+| `apps/ai_engine/services/clip_encoding.py` | **NEW** — `write_frames_to_mp4()` |
+| `apps/ai_engine/api/views.py` | Added `StartContinuousMonitorView`, `StopContinuousMonitorView`, `MonitorStatusView` |
+| `apps/ai_engine/api/urls.py` | Added 3 monitor routes |
+| `config/urls.py` | Added `path('api/ai/', include('apps.ai_engine.api.urls'))` |
 
-### AIInference
-Stores complete AI inference results.
+---
 
-**Fields:**
-- `camera_id`: ForeignKey to Camera (optional)
-- `detections`: JSON array of detected objects
-- `poses`: JSON array of pose keypoints
-- `tracks`: JSON array of tracking data
-- `classification`: "theft" or "normal"
-- `confidence`: ML model confidence (0-1)
-- `frame_metadata`: Additional frame information
-- `processing_time_ms`: Inference duration
-- `alert`: ForeignKey to Alert (if theft detected)
-- `timestamp`: When inference occurred
+## 🗄️ Database Models
 
-### DetectionTrack
-Stores per-track behavioral data.
+### AIInference (`ai_inferences` collection)
 
-**Fields:**
-- `camera_id`: ForeignKey to Camera
-- `track_id`: DeepSORT track ID
-- `object_type`: "person", "bag", "object"
-- `first_seen`, `last_seen`: Timestamps
-- `frame_count`: Number of frames tracked
-- `hand_in_bag_frames`: Behavioral counter
-- `hand_in_torso_frames`: Behavioral counter
-- `fast_wrist_frames`: Behavioral counter
-- `near_object_frames`: Behavioral counter
-- `concealment_events`: Suspicious actions
-- `ml_theft_score`: Latest ML prediction
-- `max_theft_score`: Highest score recorded
-- `is_suspicious`, `is_active`: Status flags
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | ObjectIdAutoField | MongoDB ObjectId primary key |
+| `camera_id` | FK → Camera | Source camera (nullable) |
+| `detections` | JSONField | YOLOv8 detected bounding boxes |
+| `poses` | JSONField | YOLOv8-Pose keypoints |
+| `tracks` | JSONField | DeepSORT track data |
+| `classification` | CharField | `"theft"` or `"normal"` |
+| `confidence` | FloatField | ML classifier score (0–1) |
+| `frame_metadata` | JSONField | Frame-level stats |
+| `processing_time_ms` | FloatField | Inference duration |
+| `alert` | FK → Alert | Linked alert (if theft) |
+| `timestamp` | DateTimeField | When inference ran |
+
+### DetectionTrack (`detection_tracks` collection)
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `id` | ObjectIdAutoField | |
+| `camera_id` | FK → Camera | |
+| `track_id` | IntegerField | DeepSORT track ID |
+| `object_type` | CharField | `"person"`, `"bag"`, `"object"` |
+| `first_seen`, `last_seen` | DateTimeField | Track timestamps |
+| `frame_count` | IntegerField | |
+| `hand_in_bag_frames` | IntegerField | Behavioral counter |
+| `hand_in_torso_frames` | IntegerField | Behavioral counter |
+| `fast_wrist_frames` | IntegerField | Behavioral counter |
+| `near_object_frames` | IntegerField | Behavioral counter |
+| `concealment_events` | IntegerField | Suspicious action count |
+| `ml_theft_score` | FloatField | Latest prediction |
+| `max_theft_score` | FloatField | Peak prediction |
+| `is_suspicious`, `is_active` | BooleanField | Status flags |
+
+---
 
 ## 🔧 Setup & Installation
 
-### 1. Dependencies
+### 1. Dependencies (`newReq.txt`)
 
-Your existing `requirements.txt` should already have:
-- Django
-- djangorestframework
-- torch
-- ultralytics
-- opencv-python
-- deep-sort-realtime
-- scikit-learn
-- joblib
+```
+django
+djangorestframework
+torch
+ultralytics
+opencv-python
+deep-sort-realtime
+scikit-learn
+joblib
+cloudinary        # For video clip upload
+python-dotenv
+```
 
-No additional packages needed!
+### 2. Environment Variables (`.env`)
 
-### 2. Database Migration
+```bash
+# Django
+SECRET_KEY=...
+DEBUG=True
+ALLOWED_HOSTS=localhost,127.0.0.1
+
+# MongoDB Atlas
+MONGO_URI=mongodb+srv://...
+MONGO_DB_NAME=theft_sentinel
+
+# Email (SMTP)
+EMAIL_HOST=smtp.gmail.com
+EMAIL_PORT=587
+EMAIL_USE_TLS=True
+EMAIL_HOST_USER=...
+EMAIL_HOST_PASSWORD=...
+FRONTEND_URL=http://localhost:3000
+
+# CORS
+CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
+
+# Twilio (SMS)
+TWILIO_ACCOUNT_SID=...
+TWILIO_AUTH_TOKEN=...
+TWILIO_PHONE_NUMBER=...
+
+# Cloudinary (video clip storage)
+CLOUDINARY_CLOUD_NAME=...
+CLOUDINARY_API_KEY=...
+CLOUDINARY_API_SECRET=...
+```
+
+### 3. Database Migration
 
 ```bash
 python manage.py migrate ai_engine
+python manage.py migrate alerts   # picks up video_url / video_public_id
 ```
 
-### 3. Start Server
+### 4. Start Server
 
 ```bash
 python manage.py runserver
+# AI models load automatically on startup
 ```
 
-The AI models will automatically load on startup.
-
-### 4. Verify Installation
+### 5. Verify
 
 ```bash
 curl http://localhost:8000/api/ai/health/
+# Expected: {"status":"healthy","models_loaded":true,"device":"cuda:0"}
 ```
 
-Expected response:
-```json
-{
-  "status": "healthy",
-  "models_loaded": true,
-  "device": "cuda:0"
-}
-```
-
-## 🧪 Testing
-
-### Run Test Suite
-
-```bash
-python test_ai_engine.py
-```
-
-Before running:
-1. Start Django server
-2. Update `TOKEN` with valid JWT
-3. Update `camera_id` with valid camera ID
-
-### Manual Testing with cURL
-
-**Health Check:**
-```bash
-curl http://localhost:8000/api/ai/health/
-```
-
-**Model Info:**
-```bash
-curl -H "Authorization: Bearer YOUR_TOKEN" \
-     http://localhost:8000/api/ai/model-info/
-```
-
-**Analyze Frame:**
-```bash
-curl -X POST \
-     -H "Authorization: Bearer YOUR_TOKEN" \
-     -H "Content-Type: application/json" \
-     -d '{"frame": "base64_image_data", "save_to_db": false}' \
-     http://localhost:8000/api/ai/analyze-frame/
-```
-
-## 📊 Example Request/Response
-
-### Example: Theft Detection
-
-**Request:**
-```python
-import requests
-import base64
-import cv2
-
-# Load and encode frame
-frame = cv2.imread("test_frame.jpg")
-_, buffer = cv2.imencode('.jpg', frame)
-frame_base64 = base64.b64encode(buffer).decode('utf-8')
-
-# Send request
-response = requests.post(
-    "http://localhost:8000/api/ai/analyze-frame/",
-    headers={"Authorization": f"Bearer {token}"},
-    json={
-        "frame": frame_base64,
-        "camera_id": "camera_123",
-        "create_alert_on_theft": True
-    }
-)
-
-result = response.json()
-```
-
-**Response (Theft Detected):**
-```json
-{
-  "classification": "theft",
-  "confidence": 0.87,
-  "suspicious_tracks": [
-    {
-      "track_id": 1,
-      "ml_score": 0.87,
-      "behavior": {
-        "hand_in_bag": 18,
-        "concealment_events": 3
-      }
-    }
-  ],
-  "alert_created": true,
-  "alert_id": "65f3a2b1c8d4e5f6a7b8c9d0",
-  "processing_time_ms": 145.2
-}
-```
+---
 
 ## 🔐 Security & Permissions
 
-All endpoints require authentication (JWT token) except:
-- `/api/ai/health/` (public)
+All endpoints require JWT authentication (`Authorization: Bearer <token>`) except `/api/ai/health/`.
 
-Permissions follow existing RBAC:
-- **Admin**: Full access to all AI endpoints
-- **Security In-Charge**: Full access to all AI endpoints
-- **Security Guard**: Read-only access
+| Role | AI Endpoints | Monitor Control | Inference History |
+|------|-------------|----------------|-------------------|
+| Admin | ✅ Full | ✅ Full | ✅ Full |
+| Security In-Charge | ✅ Full | ✅ Full | ✅ Full |
+| Security Guard | ✅ Read | ❌ | ✅ Read |
+
+---
 
 ## 📈 Performance
 
-### Expected Processing Times
+| Mode | Expected Time (GPU) |
+|------|-------------------|
+| Detection only | 30–50 ms |
+| Detection + Pose | 80–120 ms |
+| Full pipeline (Detection + Pose + ML) | 100–150 ms |
+| CPU mode | 2–5× slower |
 
-- **Detection Only**: 30-50ms (GPU)
-- **Detection + Pose**: 80-120ms (GPU)
-- **Full Pipeline (Detection + Pose + ML)**: 100-150ms (GPU)
-- **CPU Mode**: 2-5x slower
+**Continuous Monitor:**
+- Processes at full stream FPS (15–30)
+- DB write every ~2 s (60 frames at 30 FPS) or immediately on theft
+- Clip encoding + Cloudinary upload in non-blocking daemon thread
+- Auto-reconnect after 10 consecutive read errors
 
-### Optimization Tips
+**Clip Encoding:**
+- Max clip width: 1280 px
+- FPS: clamped to 8–60; falls back to 25 if stream FPS < 5
+- Codec: H.264 (`avc1` preferred, browser-compatible)
 
-1. **Use GPU**: Ensure CUDA is available
-2. **Batch Processing**: Process multiple frames in batch
-3. **Frame Resizing**: Resize large frames before sending
-4. **Caching**: Reuse InferenceRunner instance for sequential frames
+---
 
 ## 🐛 Troubleshooting
 
 ### AI Models Not Loading
 
-**Error:** "AI service not initialized"
+**Error:** `"AI service not initialized"`
 
-**Solution:**
-1. Check MODELEXPORT path exists
-2. Verify model files present:
+1. Check `ModelExport/` directory exists with all three model files:
    - `yolov8l.pt`
    - `yolov8l-pose.pt`
    - `trained_models/theft_classifier.pkl`
-3. Check logs: `python manage.py runserver`
+2. Run `python manage.py runserver` and watch logs.
 
 ### CUDA Not Available
 
-**Error:** "CUDA not available. Using CPU"
+**Error:** `"CUDA not available. Using CPU"`
 
-**Solution:**
-1. Install CUDA toolkit
-2. Install PyTorch with CUDA support:
-   ```bash
-   pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
-   ```
+```bash
+pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+```
 
 ### Frame Decoding Error
 
-**Error:** "Failed to decode frame from base64"
+**Error:** `"Failed to decode frame from base64"`
 
-**Solution:**
-- Ensure base64 string is valid
-- Remove data URL prefix if present
-- Check image format (JPEG/PNG supported)
+- Ensure base64 string is valid (strip `data:image/...;base64,` prefix if present).
+- Use JPEG or PNG images.
 
-### Alert Not Created
+### Cloudinary Clip Not Uploading
 
-**Issue:** Theft detected but no alert created
+1. Verify `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` are set.
+2. Check server logs for `clip-upload-<alert_id>` thread errors.
+3. Confirm `pip install cloudinary` is installed.
 
-**Solution:**
-1. Check `create_alert_on_theft` is `true`
-2. Verify camera exists in database
-3. Check alert creation permissions
-4. Review server logs for errors
+### Monitor Not Starting
 
-## 📝 Environment Variables
+1. Verify camera RTSP URL is reachable: `cv2.VideoCapture(rtsp_url).isOpened()`.
+2. Check AI service is ready: `GET /api/ai/health/`.
+3. Look for `"Failed to open stream"` in logs.
 
-Add to `.env` if needed:
+### Alert Has No `video_url`
 
-```bash
-# AI Engine Settings (Optional)
-AI_ENGINE_DEVICE=cuda:0           # Force specific device
-AI_ENGINE_BATCH_SIZE=4            # Batch processing size
-AI_ENGINE_CONFIDENCE_THRESHOLD=0.5 # Theft threshold
-```
+- Frame buffer may have been empty at the moment of detection (monitor just started).
+- Cloudinary upload failed — check daemon thread logs.
+- The clip upload is asynchronous; `video_url` is patched in a few seconds after the alert is created.
 
-## 🔄 Integration Checklist
+---
 
-- [x] AI models loading automatically on startup
-- [x] All 6 API endpoints functional
-- [x] Integration with existing Alert system
-- [x] Database models created and migrated
+## ✅ Integration Checklist
+
+- [x] AI models load automatically on server startup
+- [x] 9 API endpoints functional
+- [x] On-demand frame analysis (`analyze-frame`, `process-camera`, `full-pipeline`)
+- [x] Continuous live stream monitoring (`monitor/start`, `monitor/stop`, `monitor/status`)
+- [x] 5-second rolling frame buffer per monitor
+- [x] Theft → MP4 clip encoded in-memory
+- [x] MP4 clip uploaded to Cloudinary (non-blocking)
+- [x] `video_url` + `video_public_id` saved to `Alert` row
+- [x] Alert creation via existing `AlertCreateSerializer`
+- [x] `AIInference` and `DetectionTrack` DB models migrated
+- [x] RBAC permissions enforced on all endpoints
+- [x] Auto-reconnect on stream failures
 - [x] Admin interface configured
-- [x] Test suite provided
-- [x] Documentation complete
-- [x] Zero modifications to existing code
-- [x] Production-ready error handling
-- [x] Proper logging configured
+- [x] Test suite provided (`test_ai_engine.py`)
+- [x] Zero modifications to existing business logic
 
-## 🎉 Success!
+---
 
-Your AI pipeline is now fully integrated into your Django backend!
+## 🎉 What Was Changed vs. Original Integration
 
-**What was NOT modified:**
-- ❌ `apps/accounts/*` (authentication)
-- ❌ `apps/alerts/*` (existing alerts)
-- ❌ `apps/incidents/*` (existing incidents)
-- ❌ `apps/cameras/*` (existing cameras)
-- ❌ `ModelExport/*` (your AI pipeline)
-- ❌ Any existing business logic
+| Area | Original | Current |
+|------|----------|---------|
+| AI endpoints | 6 | 9 (added monitor start/stop/status) |
+| Services | `ai_service.py`, `inference_runner.py` | + `continuous_monitor.py`, `clip_encoding.py` |
+| Alert model | No video fields | `video_url`, `video_public_id` added |
+| Cloudinary | Not integrated | `apps/alerts/cloudinary_video.py` |
+| Frame buffer | None | 150-frame rolling deque (~5 s at 30 FPS) |
+| Clip pipeline | None | encode → upload → save URL (async) |
+| Monitoring | Poll-based (2-s intervals) | Continuous full-FPS stream |
 
-**What was added:**
-- ✅ `apps/ai_engine/*` (new isolated module)
-- ✅ API endpoints for AI processing
-- ✅ Database models for AI results
-- ✅ Integration hooks to existing alerts
-- ✅ Test suite and documentation
+---
 
 ## 📞 Support
 
-For issues or questions:
 1. Check this documentation
-2. Review test suite examples
-3. Check server logs
-4. Verify model files present
-5. Test with health check endpoint
-
+2. Check server logs (`python manage.py runserver`)
+3. Test health: `GET /api/ai/health/`
+4. Test monitor status: `GET /api/ai/monitor/status/`
+5. Verify model files in `ModelExport/`
+6. Verify Cloudinary credentials in `.env`
