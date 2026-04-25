@@ -7,7 +7,8 @@ from rest_framework.permissions import IsAuthenticated
 
 from .models import Personnel
 from .serializers import PersonnelSerializer, PersonnelCreateSerializer
-from apps.accounts.permissions import IsAdmin, CanManageUsers
+from apps.accounts.permissions import IsApprovedBranchUser
+from config.tenant_scope import scoped_personnel
 
 
 class PersonnelListCreateView(generics.ListCreateAPIView):
@@ -19,7 +20,7 @@ class PersonnelListCreateView(generics.ListCreateAPIView):
     - Only Admin can create personnel (part of user management)
     """
     queryset = Personnel.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -27,19 +28,20 @@ class PersonnelListCreateView(generics.ListCreateAPIView):
         return PersonnelSerializer
     
     def get_queryset(self):
-        queryset = Personnel.objects.select_related('user').all()
+        queryset = scoped_personnel(self.request.user).select_related('user')
         
-        # Filter by zone if provided
         zone = self.request.query_params.get('zone', None)
         if zone:
             queryset = queryset.filter(assigned_zones__contains=zone)
         
         return queryset.order_by('-created_at')
     
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
+    
     def create(self, request, *args, **kwargs):
-        """
-        Only Admin can create personnel
-        """
         if request.user.role != 'ADMIN':
             return Response(
                 {'error': 'You do not have permission to create personnel. Only Admin can manage users.'},
@@ -58,15 +60,17 @@ class PersonnelDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     queryset = Personnel.objects.all()
     serializer_class = PersonnelSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_queryset(self):
-        return Personnel.objects.select_related('user').all()
+        return scoped_personnel(self.request.user).select_related('user')
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
     
     def update(self, request, *args, **kwargs):
-        """
-        Only Admin can update personnel
-        """
         if request.user.role != 'ADMIN':
             return Response(
                 {'error': 'You do not have permission to update personnel. Only Admin can manage users.'},
@@ -75,9 +79,6 @@ class PersonnelDetailView(generics.RetrieveUpdateDestroyAPIView):
         return super().update(request, *args, **kwargs)
     
     def partial_update(self, request, *args, **kwargs):
-        """
-        Only Admin can update personnel
-        """
         if request.user.role != 'ADMIN':
             return Response(
                 {'error': 'You do not have permission to update personnel. Only Admin can manage users.'},
@@ -86,9 +87,6 @@ class PersonnelDetailView(generics.RetrieveUpdateDestroyAPIView):
         return super().partial_update(request, *args, **kwargs)
     
     def destroy(self, request, *args, **kwargs):
-        """
-        Only Admin can delete personnel
-        """
         if request.user.role != 'ADMIN':
             return Response(
                 {'error': 'You do not have permission to delete personnel. Only Admin can manage users.'},
@@ -100,7 +98,7 @@ class PersonnelDetailView(generics.RetrieveUpdateDestroyAPIView):
 class MyPersonnelProfileView(generics.RetrieveAPIView):
     """Get current user's personnel profile"""
     serializer_class = PersonnelSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_object(self):
         try:
@@ -110,4 +108,3 @@ class MyPersonnelProfileView(generics.RetrieveAPIView):
                 {'error': 'Personnel profile not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-

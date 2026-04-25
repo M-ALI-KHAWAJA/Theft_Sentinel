@@ -277,6 +277,7 @@ class ContinuousMonitor:
             
             alert = Alert.objects.create(
                 camera_id=camera,
+                tenant_id=camera.tenant_id,
                 alert_type='THEFT_DETECTED',
                 severity='HIGH' if result['confidence'] > 0.7 else 'MEDIUM',
                 status='ACTIVE',
@@ -294,12 +295,23 @@ class ContinuousMonitor:
     def _save_tracking_data(self, result: Dict):
         """Persist confirmed tracks to the tracking_records collection."""
         try:
+<<<<<<< HEAD
+            if not write_frames_to_mp4(clip_frames, tmp_path, fps=fps):
+                return
+            tid = str(alert.tenant_id) if getattr(alert, 'tenant_id', None) else None
+            video_url, public_id = upload_video_to_cloudinary(tmp_path, tenant_id=tid)
+            if video_url:
+                alert.video_url = video_url
+                alert.video_public_id = public_id
+                alert.save(update_fields=["video_url", "video_public_id"])
+=======
             from apps.tracking.services import TrackingService
             TrackingService.save_tracks(
                 camera_id=self.camera_id,
                 tracks=result.get('tracks', []),
                 inference_result=result,
             )
+>>>>>>> main
         except Exception as e:
             logger.error(f"Failed to save tracking data: {str(e)}")
     

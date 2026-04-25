@@ -9,25 +9,40 @@ from rest_framework_simplejwt.tokens import RefreshToken
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
-from django.core.mail import send_mail
 from django.conf import settings
+from django.core.mail import send_mail
 import logging
 
 from rest_framework.serializers import ValidationError as DRFValidationError
 
 from .serializers import (
-    UserSerializer, 
-    UserCreateSerializer, 
+    UserSerializer,
+    UserCreateSerializer,
     CustomTokenObtainPairSerializer,
     ChangePasswordSerializer,
-    ForgotPasswordSerializer,
     ResetPasswordSerializer,
+    PasswordResetRequestCreateSerializer,
+    PasswordResetRequestReadSerializer,
+    CreateSuperAdminSerializer,
+    SuperAdminProfileSerializer,
     validate_password_strength,
-    NON_ADMIN_FORGOT_PASSWORD_MESSAGE,
 )
-from .permissions import IsAdmin, CanChangeOwnPassword, CanManageUsers, IsAdminOrIncharge
-from .models import PasswordResetToken, PasswordResetAudit
+from .permissions import (
+    IsAdmin,
+    CanChangeOwnPassword,
+    CanManageUsers,
+    IsAdminOrIncharge,
+    IsApprovedBranchUser,
+    IsSuperAdmin,
+)
+from .models import (
+    PasswordResetToken,
+    PasswordResetAudit,
+    PasswordResetRequest,
+    SuperAdminProfile,
+)
 from config.env_validator import get_client_ip, get_user_agent
+from config.email_utils import send_system_mail
 
 User = get_user_model()
 logger = logging.getLogger(__name__)
@@ -44,8 +59,13 @@ class RegisterView(generics.CreateAPIView):
     created by administrators through the admin panel or user management interface.
     """
     queryset = User.objects.all()
-    permission_classes = [IsAuthenticated, CanManageUsers]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanManageUsers]
     serializer_class = UserCreateSerializer
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
     
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
@@ -88,6 +108,11 @@ class UserProfileView(generics.RetrieveUpdateAPIView):
     """Get and update current user profile"""
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
     
     def get_object(self):
         return self.request.user
@@ -128,10 +153,17 @@ class UserListView(generics.ListAPIView):
     """
     queryset = User.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated, IsAdminOrIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrIncharge]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
     
     def get_queryset(self):
-        queryset = User.objects.all()
+        queryset = User.objects.filter(tenant_id=self.request.user.tenant_id).exclude(
+            role='SUPER_ADMIN'
+        )
         role = self.request.query_params.get('role', None)
         if role:
             queryset = queryset.filter(role=role)
@@ -145,7 +177,15 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     queryset = User.objects.all()
     serializer_class = UserSerializer
-    permission_classes = [IsAuthenticated, CanManageUsers]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanManageUsers]
+
+    def get_serializer_context(self):
+        ctx = super().get_serializer_context()
+        ctx['request'] = self.request
+        return ctx
+
+    def get_queryset(self):
+        return User.objects.filter(tenant_id=self.request.user.tenant_id).exclude(role='SUPER_ADMIN')
     
     def update(self, request, *args, **kwargs):
         """Override update to enforce Admin uniqueness"""
@@ -155,10 +195,18 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
         # Check if trying to set role to ADMIN
         if 'role' in request.data and request.data['role'] == 'ADMIN':
             # Check if another Admin already exists (excluding current user)
-            existing_admin = User.objects.filter(role='ADMIN', is_active=True).exclude(pk=instance.pk).first()
+            existing_admin = (
+                User.objects.filter(
+                    role='ADMIN',
+                    is_active=True,
+                    tenant_id=request.user.tenant_id,
+                )
+                .exclude(pk=instance.pk)
+                .first()
+            )
             if existing_admin:
                 return Response(
-                    {'role': ['Only one Admin can exist in the system. An Admin user already exists.']},
+                    {'role': ['Only one Admin can exist per branch. An Admin user already exists.']},
                     status=status.HTTP_400_BAD_REQUEST
                 )
         
@@ -188,11 +236,11 @@ class AdminChangeUserPasswordView(views.APIView):
     Admin can change any user's password
     Only Admin has this permission
     """
-    permission_classes = [IsAuthenticated, IsAdmin]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdmin]
     
     def post(self, request, pk):
         try:
-            user = User.objects.get(pk=pk)
+            user = User.objects.get(pk=pk, tenant_id=request.user.tenant_id)
         except User.DoesNotExist:
             return Response(
                 {'error': 'User not found'},
@@ -223,190 +271,35 @@ class AdminChangeUserPasswordView(views.APIView):
 
 class ForgotPasswordView(views.APIView):
     """
-    Forgot Password - Admin Only
-    
-    This endpoint:
-    1. Verifies the email exists and belongs to an admin account
-    2. Generates a secure reset token (32 characters)
-    3. Stores token with 30-minute expiration
-    4. Sends reset link via email
-    5. Logs all attempts for audit purposes
-    
-    Only admin users can reset passwords. Security personnel and guards
-    must contact the admin.
+    Legacy direct forgot-password endpoint (disabled).
+
+    Password reset links are issued only after a Super Admin approves a
+    ``PasswordResetRequest`` (see ``POST /api/password-reset-request/``).
     """
-    permission_classes = [AllowAny]  # Public endpoint for forgot password
-    
-    def _log_audit(self, email, is_admin, success, reason, request):
-        """Log password reset attempt for audit purposes"""
-        try:
-            PasswordResetAudit.objects.create(
-                email=email,
-                is_admin=is_admin,
-                success=success,
-                reason=reason,
-                ip_address=get_client_ip(request),
-                user_agent=get_user_agent(request),
-            )
-        except Exception as e:
-            # Don't fail the request if audit logging fails
-            logger.error(f"Failed to log password reset audit: {str(e)}", exc_info=True)
-    
+
+    permission_classes = [AllowAny]
+
     def post(self, request):
-        serializer = ForgotPasswordSerializer(data=request.data)
-        
-        if not serializer.is_valid():
-            # Log validation failure
-            email = request.data.get('email', 'unknown')
-            self._log_audit(
-                email=email,
-                is_admin=False,
-                success=False,
-                reason='Invalid email format',
-                request=request
-            )
-            return Response(
-                serializer.errors,
-                status=status.HTTP_400_BAD_REQUEST
-            )
-        
-        email = serializer.validated_data['email']
-        
-        try:
-            user = User.objects.get(email=email)
-            
-            if not user.is_active:
-                # Log inactive account attempt
-                self._log_audit(
-                    email=email,
-                    is_admin=True,
-                    success=False,
-                    reason='Account is inactive',
-                    request=request
+        return Response(
+            {
+                'error': (
+                    'Direct password reset is disabled. Use the password reset request form; '
+                    'a Super Admin must approve your request before a reset link is emailed.'
                 )
-                return Response(
-                    {'error': 'Account is inactive. Please contact administrator.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            # Generate secure token
-            token = PasswordResetToken.generate_token()
-            
-            # Create reset token with 30-minute expiration
-            expires_at = timezone.now() + timedelta(minutes=30)
-            
-            # Invalidate any existing unused tokens for this user
-            PasswordResetToken.objects.filter(user=user, used=False).update(used=True)
-            
-            # Create new token
-            reset_token = PasswordResetToken.objects.create(
-                user=user,
-                token=token,
-                expires_at=expires_at
-            )
-            
-            # Generate reset link
-            frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173')
-            reset_link = f"{frontend_url}/reset-password?token={token}"
-            
-            # Send email with hardened error handling
-            try:
-                send_mail(
-                    subject='Theft Sentinel - Admin Password Reset',
-                    message=f'''Hello {user.username},
-
-You requested to reset your admin password for Theft Sentinel.
-
-Click the following link to reset your password:
-{reset_link}
-
-This link will expire in 30 minutes.
-
-If you did not request this password reset, please ignore this email.
-
-Security Note: Only admin users can reset passwords using this flow. Security personnel and guards must contact the admin.
-
-Best regards,
-Theft Sentinel Team''',
-                    from_email=getattr(settings, 'DEFAULT_FROM_EMAIL', settings.EMAIL_HOST_USER),
-                    recipient_list=[user.email],
-                    fail_silently=False,
-                )
-                
-                logger.info(f"Password reset email sent successfully to admin: {user.email}")
-                
-                # Log successful email send
-                self._log_audit(
-                    email=email,
-                    is_admin=True,
-                    success=True,
-                    reason='Password reset email sent successfully',
-                    request=request
-                )
-                
-                return Response(
-                    {'message': 'If this email is registered as an admin, a password reset link has been sent.'},
-                    status=status.HTTP_200_OK
-                )
-                
-            except Exception as e:
-                # Hardened error handling - don't crash the backend
-                error_msg = str(e)
-                logger.error(
-                    f"SMTP error: Failed to send password reset email to {user.email}",
-                    exc_info=True
-                )
-                
-                # Delete token if email sending failed
-                try:
-                    reset_token.delete()
-                except Exception as delete_error:
-                    logger.error(f"Failed to delete reset token after email failure: {delete_error}")
-                
-                # Log SMTP failure
-                self._log_audit(
-                    email=email,
-                    is_admin=True,
-                    success=False,
-                    reason=f'SMTP error: {error_msg[:200]}',  # Limit reason length
-                    request=request
-                )
-                
-                # Return user-safe error message (503 Service Unavailable)
-                return Response(
-                    {'error': 'Email service is currently unavailable. Please try again later or contact support.'},
-                    status=status.HTTP_503_SERVICE_UNAVAILABLE
-                )
-                
-        except User.DoesNotExist:
-            # Log email not found attempt
-            self._log_audit(
-                email=email,
-                is_admin=False,
-                success=False,
-                reason='Email not found in database',
-                request=request
-            )
-            return Response(
-                {'email': [NON_ADMIN_FORGOT_PASSWORD_MESSAGE]},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+            },
+            status=status.HTTP_403_FORBIDDEN,
+        )
 
 
 class ResetPasswordView(views.APIView):
     """
-    Reset Password - Admin Only
-    
-    This endpoint:
-    1. Validates the reset token
-    2. Checks token expiration and usage
-    3. Updates admin password securely
-    4. Invalidates the token
-    5. Logs all attempts for audit purposes
-    
-    Only valid, unexpired tokens can be used.
+    Reset password using a token issued after Super Admin approval.
+
+    Validates the reset token, enforces expiry, updates the user's password,
+    marks the token used, and writes audit rows.
     """
-    permission_classes = [AllowAny]  # Public endpoint for password reset
+
+    permission_classes = [AllowAny]
     
     def _log_audit(self, email, is_admin, success, reason, request):
         """Log password reset attempt for audit purposes"""
@@ -441,11 +334,11 @@ class ResetPasswordView(views.APIView):
                 status=status.HTTP_400_BAD_REQUEST
             )
         
-        token = serializer.validated_data['token']
+        token_value = (serializer.validated_data['token'] or '').strip()
         new_password = serializer.validated_data['new_password']
-        
+
         try:
-            reset_token = PasswordResetToken.objects.get(token=token)
+            reset_token = PasswordResetToken.objects.get(token=token_value)
             user = reset_token.user
             user_email = user.email if user else 'unknown'
             
@@ -455,7 +348,7 @@ class ResetPasswordView(views.APIView):
                     # Log used token attempt
                     self._log_audit(
                         email=user_email,
-                        is_admin=user.role == 'ADMIN' if user else False,
+                        is_admin=user.role in ('ADMIN', 'SUPER_ADMIN') if user else False,
                         success=False,
                         reason='Token already used',
                         request=request
@@ -468,7 +361,7 @@ class ResetPasswordView(views.APIView):
                     # Log expired token attempt
                     self._log_audit(
                         email=user_email,
-                        is_admin=user.role == 'ADMIN' if user else False,
+                        is_admin=user.role in ('ADMIN', 'SUPER_ADMIN') if user else False,
                         success=False,
                         reason='Token expired',
                         request=request
@@ -478,21 +371,6 @@ class ResetPasswordView(views.APIView):
                         status=status.HTTP_400_BAD_REQUEST
                     )
             
-            # Verify user is admin
-            if user.role != 'ADMIN':
-                # Log non-admin attempt
-                self._log_audit(
-                    email=user_email,
-                    is_admin=False,
-                    success=False,
-                    reason='Non-admin user attempted password reset',
-                    request=request
-                )
-                return Response(
-                    {'error': 'Invalid reset token.'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
             # Update password
             user.set_password(new_password)
             user.save()
@@ -501,15 +379,15 @@ class ResetPasswordView(views.APIView):
             reset_token.used = True
             reset_token.save()
             
-            logger.info(f"Password reset successful for admin: {user.email}")
-            
+            logger.info('Password reset successful for user_id=%s', user.pk)
+
             # Log successful password reset
             self._log_audit(
                 email=user_email,
-                is_admin=True,
+                is_admin=user.role in ('ADMIN', 'SUPER_ADMIN'),
                 success=True,
                 reason='Password successfully reset',
-                request=request
+                request=request,
             )
             
             return Response(
@@ -530,3 +408,330 @@ class ResetPasswordView(views.APIView):
                 {'error': 'Invalid or expired reset token. Please request a new password reset.'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
+
+class PasswordResetRequestCreateView(views.APIView):
+    """Public: submit a reset request for Super Admin review."""
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        serializer = PasswordResetRequestCreateSerializer(
+            data=request.data,
+            context={'request': request},
+        )
+        serializer.is_valid(raise_exception=True)
+        user = serializer.context['resolved_user']
+        if PasswordResetRequest.objects.filter(user=user, status='PENDING').exists():
+            return Response(
+                {'error': 'You already have a pending password reset request.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        pr = PasswordResetRequest.objects.create(
+            user=user,
+            reason=serializer.validated_data['reason'],
+            status='PENDING',
+        )
+        logger.info(
+            'password_reset_request_created id=%s user_id=%s email=%s tenant_id=%s',
+            pr.pk,
+            user.pk,
+            user.email,
+            getattr(user, 'tenant_id', None),
+        )
+        return Response(
+            {'message': 'Request sent to Super Admin'},
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class CreateSuperAdminView(views.APIView):
+    """One-time bootstrap: create the platform Super Admin if none exists."""
+
+    permission_classes = [AllowAny]
+
+    def get(self, request):
+        can_create = not User.objects.filter(role='SUPER_ADMIN').exists()
+        return Response({'can_create': can_create})
+
+    def post(self, request):
+        if User.objects.filter(role='SUPER_ADMIN').exists():
+            return Response(
+                {'error': 'Super Admin already exists'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        serializer = CreateSuperAdminSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+        email = data['email']
+        base_username = email.split('@')[0].replace('.', '_')[:120]
+        username = base_username
+        n = 0
+        while User.objects.filter(username=username, tenant__isnull=True).exists():
+            n += 1
+            username = f'{base_username}_{n}'[:150]
+
+        user = User.objects.create_user(
+            email,
+            data['password'],
+            username=username,
+            role='SUPER_ADMIN',
+            tenant=None,
+            is_staff=True,
+            is_superuser=True,
+            is_active=True,
+        )
+        SuperAdminProfile.objects.create(
+            user=user,
+            display_name=data['name'],
+            phone=data['phone'],
+            partners=list(data['partners']),
+        )
+        return Response(
+            {
+                'message': 'Super Admin created successfully.',
+                'user_id': str(user.pk),
+            },
+            status=status.HTTP_201_CREATED,
+        )
+
+
+class SuperAdminPasswordResetRequestListView(generics.ListAPIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+    serializer_class = PasswordResetRequestReadSerializer
+    queryset = PasswordResetRequest.objects.all().order_by('-created_at')
+
+
+class SuperAdminPasswordResetRequestApproveView(views.APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def post(self, request, pk):
+        try:
+            reset_request = PasswordResetRequest.objects.get(pk=pk)
+        except PasswordResetRequest.DoesNotExist:
+            return Response({'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+        if reset_request.status != 'PENDING':
+            return Response(
+                {'error': 'Only pending requests can be approved.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user = reset_request.user
+        token = PasswordResetToken.generate_token()
+        expires_at = timezone.now() + timedelta(minutes=30)
+        PasswordResetToken.objects.filter(user=user, used=False).update(used=True)
+        reset_token = PasswordResetToken.objects.create(
+            user=user,
+            token=token,
+            expires_at=expires_at,
+        )
+        frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+        # Query-string link survives email clients better than a long path segment.
+        reset_link = f'{frontend_url}/reset-password?token={token}'
+        try:
+            send_system_mail(
+                subject='Password Reset Approved',
+                message=f'Reset your password: {reset_link}',
+                recipient_list=[user.email],
+            )
+        except Exception:
+            logger.exception(
+                'Failed to send password reset approval email to user_id=%s',
+                user.pk,
+            )
+            try:
+                reset_token.delete()
+            except Exception:
+                logger.exception('Failed to roll back reset token after email error')
+            return Response(
+                {'error': 'Email service is currently unavailable. Please try again later.'},
+                status=status.HTTP_503_SERVICE_UNAVAILABLE,
+            )
+        reset_request.status = 'APPROVED'
+        reset_request.save(update_fields=['status'])
+        return Response(PasswordResetRequestReadSerializer(reset_request).data)
+
+
+class SuperAdminPasswordResetRequestRejectView(views.APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def post(self, request, pk):
+        try:
+            reset_request = PasswordResetRequest.objects.get(pk=pk)
+        except PasswordResetRequest.DoesNotExist:
+            return Response({'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+        if reset_request.status != 'PENDING':
+            return Response(
+                {'error': 'Only pending requests can be rejected.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        reset_request.status = 'REJECTED'
+        reset_request.save(update_fields=['status'])
+        try:
+            send_system_mail(
+                subject='Password reset request declined',
+                message=(
+                    'Your password reset request was not approved. '
+                    'Contact your administrator if you still need access.'
+                ),
+                recipient_list=[reset_request.user.email],
+            )
+        except Exception:
+            logger.exception(
+                'Failed to send password reset rejection email to user_id=%s',
+                reset_request.user_id,
+            )
+        return Response(PasswordResetRequestReadSerializer(reset_request).data)
+
+
+class SuperAdminSelfPasswordResetView(views.APIView):
+    """
+    Super Admin password reset email (no reason, no approval queue).
+
+    - Authenticated Super Admin: uses current user (optional for profile UI).
+    - Unauthenticated: JSON ``{"email": "..."}`` must match an active Super Admin account.
+    """
+
+    permission_classes = [AllowAny]
+
+    def post(self, request):
+        def issue_and_email(user):
+            from_email = getattr(settings, 'EMAIL_HOST_USER', '') or ''
+            logger.info(
+                'super_admin_reset: preparing token user_id=%s recipient_email=%s from_email_set=%s',
+                user.pk,
+                user.email,
+                bool(from_email),
+            )
+            if not from_email:
+                logger.error('super_admin_reset: EMAIL_HOST_USER is empty; cannot send mail')
+                return Response(
+                    {'error': 'Email service is not configured. Please try again later.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            token = PasswordResetToken.generate_token()
+            expires_at = timezone.now() + timedelta(minutes=30)
+            PasswordResetToken.objects.filter(user=user, used=False).update(used=True)
+            reset_token = PasswordResetToken.objects.create(
+                user=user,
+                token=token,
+                expires_at=expires_at,
+            )
+            frontend_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:5173').rstrip('/')
+            reset_link = f'{frontend_url}/reset-password/{token}'
+            subject = 'Super Admin Password Reset'
+            body = f'Reset your password: {reset_link}'
+            try:
+                send_mail(
+                    subject=subject,
+                    message=body,
+                    from_email=from_email,
+                    recipient_list=[user.email],
+                    fail_silently=False,
+                )
+                logger.info(
+                    'super_admin_reset: send_mail succeeded user_id=%s to=%s',
+                    user.pk,
+                    user.email,
+                )
+            except Exception:
+                logger.exception(
+                    'super_admin_reset: send_mail failed user_id=%s to=%s',
+                    user.pk,
+                    user.email,
+                )
+                try:
+                    reset_token.delete()
+                except Exception:
+                    logger.exception('Failed to roll back reset token after email error')
+                return Response(
+                    {'error': 'Email service is currently unavailable. Please try again later.'},
+                    status=status.HTTP_503_SERVICE_UNAVAILABLE,
+                )
+            return Response({'message': 'Reset link sent'})
+
+        u = getattr(request, 'user', None)
+        if u and u.is_authenticated and getattr(u, 'role', None) == 'SUPER_ADMIN':
+            return issue_and_email(u)
+
+        email = (request.data.get('email') or '').strip().lower()
+        if not email:
+            return Response({'error': 'Email is required.'}, status=status.HTTP_400_BAD_REQUEST)
+        if '@' not in email:
+            return Response({'error': 'Enter a valid email address.'}, status=status.HTTP_400_BAD_REQUEST)
+
+        target = User.objects.filter(email__iexact=email).first()
+        if not target or target.role != 'SUPER_ADMIN' or not target.is_active:
+            return Response(
+                {'error': 'Invalid Super Admin email'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        return issue_and_email(target)
+
+
+class SuperAdminDeleteAccountView(views.APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def delete(self, request):
+        from apps.tenants.models import Tenant
+
+        if Tenant.objects.exists():
+            return Response(
+                {'error': 'Delete all branches before deleting Super Admin'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        user = request.user
+        user.delete()
+        return Response(
+            {
+                'message': 'Super Admin account deleted.',
+                'clear_tokens': True,
+            },
+            status=status.HTTP_200_OK,
+        )
+
+
+class SuperAdminProfileView(views.APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def get(self, request):
+        profile = SuperAdminProfile.objects.filter(user=request.user).first()
+        if not profile:
+            return Response(
+                {'error': 'Super Admin profile not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        return Response(SuperAdminProfileSerializer(profile).data)
+
+    def patch(self, request):
+        profile = SuperAdminProfile.objects.filter(user=request.user).first()
+        if not profile:
+            return Response(
+                {'error': 'Super Admin profile not found.'},
+                status=status.HTTP_404_NOT_FOUND,
+            )
+        serializer = SuperAdminProfileSerializer(
+            profile,
+            data=request.data,
+            partial=True,
+        )
+        serializer.is_valid(raise_exception=True)
+        serializer.save()
+        profile.refresh_from_db()
+        return Response(SuperAdminProfileSerializer(profile).data)
+
+
+class PasswordResetRequestDestroyView(views.APIView):
+    permission_classes = [IsAuthenticated, IsSuperAdmin]
+
+    def delete(self, request, pk):
+        try:
+            obj = PasswordResetRequest.objects.get(pk=pk)
+        except PasswordResetRequest.DoesNotExist:
+            return Response({'error': 'Request not found'}, status=status.HTTP_404_NOT_FOUND)
+        if obj.status == 'PENDING':
+            return Response(
+                {'error': 'Cannot delete a pending request.'},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
+        obj.delete()
+        return Response(status=status.HTTP_204_NO_CONTENT)

@@ -30,6 +30,8 @@ import logging
 import queue
 import time
 
+from apps.accounts.permissions import IsApprovedBranchUser
+from config.tenant_scope import scoped_cameras, scoped_alerts
 from apps.ai_engine.services.ai_service import ai_service
 from apps.ai_engine.services.inference_runner import InferenceRunner
 from apps.ai_engine.utils.frame_utils import (
@@ -38,12 +40,9 @@ from apps.ai_engine.utils.frame_utils import (
     validate_frame,
 )
 from apps.ai_engine.models import AIInference, DetectionTrack
-from apps.cameras.models import Camera
-
-# Import existing alert/incident logic (DO NOT MODIFY THEM)
+# Import existing alert logic (DO NOT MODIFY THEM)
 from apps.alerts.models import Alert
 from apps.alerts.serializers import AlertCreateSerializer
-from apps.incidents.models import Incident
 
 from .serializers import (
     FrameAnalysisRequestSerializer,
@@ -63,7 +62,7 @@ class AnalyzeFrameView(views.APIView):
     Analyze a single frame for theft detection
     Accepts base64 encoded image
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def post(self, request):
         # Validate request
@@ -103,9 +102,8 @@ class AnalyzeFrameView(views.APIView):
         camera = None
         camera_id = data.get('camera_id')
         if camera_id:
-            try:
-                camera = Camera.objects.get(pk=camera_id)
-            except Camera.DoesNotExist:
+            camera = scoped_cameras(request.user).filter(pk=camera_id).first()
+            if not camera:
                 return Response(
                     {'error': f'Camera not found: {camera_id}'},
                     status=status.HTTP_404_NOT_FOUND
@@ -132,7 +130,7 @@ class AnalyzeFrameView(views.APIView):
             
             # Save to database if requested
             if data.get('save_to_db', True):
-                inference = self._save_inference(camera, result, alert_id)
+                inference = self._save_inference(request.user, camera, result, alert_id)
                 if inference:
                     inference_id = str(inference.id)
             
@@ -217,15 +215,12 @@ class AnalyzeFrameView(views.APIView):
             logger.error(f"Error creating alert: {str(e)}", exc_info=True)
             return None
     
-    def _save_inference(self, camera, result, alert_id=None):
+    def _save_inference(self, user, camera, result, alert_id=None):
         """Save inference result to database"""
         try:
             alert = None
             if alert_id:
-                try:
-                    alert = Alert.objects.get(pk=alert_id)
-                except Alert.DoesNotExist:
-                    pass
+                alert = scoped_alerts(user).filter(pk=alert_id).first()
             
             inference = AIInference.objects.create(
                 camera_id=camera,
@@ -252,7 +247,7 @@ class ProcessCameraView(views.APIView):
     
     Capture frame from camera RTSP stream and analyze it
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def post(self, request):
         # Validate request
@@ -274,9 +269,8 @@ class ProcessCameraView(views.APIView):
         
         # Get camera
         camera_id = data['camera_id']
-        try:
-            camera = Camera.objects.get(pk=camera_id)
-        except Camera.DoesNotExist:
+        camera = scoped_cameras(request.user).filter(pk=camera_id).first()
+        if not camera:
             return Response(
                 {'error': f'Camera not found: {camera_id}'},
                 status=status.HTTP_404_NOT_FOUND
@@ -333,7 +327,7 @@ class ProcessCameraView(views.APIView):
             
             # Save to database if requested
             if data.get('save_to_db', True):
-                inference = self._save_inference(camera, result, alert_id)
+                inference = self._save_inference(request.user, camera, result, alert_id)
                 if inference:
                     inference_id = str(inference.id)
             
@@ -409,15 +403,12 @@ class ProcessCameraView(views.APIView):
             logger.error(f"Error creating alert: {str(e)}", exc_info=True)
             return None
     
-    def _save_inference(self, camera, result, alert_id=None):
+    def _save_inference(self, user, camera, result, alert_id=None):
         """Same as AnalyzeFrameView"""
         try:
             alert = None
             if alert_id:
-                try:
-                    alert = Alert.objects.get(pk=alert_id)
-                except Alert.DoesNotExist:
-                    pass
+                alert = scoped_alerts(user).filter(pk=alert_id).first()
             
             inference = AIInference.objects.create(
                 camera_id=camera,
@@ -445,7 +436,7 @@ class FullPipelineView(views.APIView):
     Run full pipeline analysis (convenience endpoint that combines both options)
     Can accept either frame data or camera_id
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def post(self, request):
         # Check if frame or camera_id provided
@@ -477,7 +468,7 @@ class ModelInfoView(views.APIView):
     
     Get information about loaded AI models
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get(self, request):
         model_info = ai_service.get_model_info()
@@ -493,10 +484,12 @@ class InferenceHistoryView(views.APIView):
     
     Get inference history with optional filters
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get(self, request):
-        queryset = AIInference.objects.select_related('camera_id', 'alert').all()
+        queryset = AIInference.objects.select_related('camera_id', 'alert').filter(
+            camera_id__tenant_id=request.user.tenant_id
+        )
         
         # Apply filters
         camera_id = request.query_params.get('camera_id')
@@ -553,7 +546,7 @@ class StartContinuousMonitorView(views.APIView):
     Start continuous monitoring on a camera (processes live feed at full FPS).
     Requires ADMIN or SECURITY_INCHARGE role; returns 403 otherwise.
     """
-    permission_classes = [IsAuthenticated, IsAdminOrSecurityIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrSecurityIncharge]
     
     def post(self, request):
         from ..services.continuous_monitor import monitor_manager
@@ -568,9 +561,8 @@ class StartContinuousMonitorView(views.APIView):
             )
         
         # Get camera
-        try:
-            camera = Camera.objects.get(pk=camera_id)
-        except Camera.DoesNotExist:
+        camera = scoped_cameras(request.user).filter(pk=camera_id).first()
+        if not camera:
             return Response(
                 {'error': f'Camera not found: {camera_id}'},
                 status=status.HTTP_404_NOT_FOUND
@@ -636,7 +628,7 @@ class StopContinuousMonitorView(views.APIView):
     Always returns 200 — "monitor not found" means it is already stopped,
     which is the desired outcome, so it is treated as a success.
     """
-    permission_classes = [IsAuthenticated, IsAdminOrSecurityIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrSecurityIncharge]
     
     def post(self, request):
         from ..services.continuous_monitor import monitor_manager
@@ -647,7 +639,12 @@ class StopContinuousMonitorView(views.APIView):
                 {'error': 'camera_id is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-
+        
+        if not scoped_cameras(request.user).filter(pk=camera_id).exists():
+            return Response(
+                {'error': f'Camera not found: {camera_id}'},
+                status=status.HTTP_404_NOT_FOUND
+            )
         success = monitor_manager.stop_monitor(camera_id)
 
         # ── Persist the OFF state to MongoDB regardless of whether a monitor
@@ -697,7 +694,7 @@ class MonitorStatusView(views.APIView):
         "total_monitors": 1
     }
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get(self, request):
         from ..services.continuous_monitor import monitor_manager
@@ -705,20 +702,20 @@ class MonitorStatusView(views.APIView):
         camera_id = request.query_params.get('camera_id')
         
         if camera_id:
+            cam = scoped_cameras(request.user).filter(pk=camera_id).first()
+            if not cam:
+                return Response(
+                    {'error': 'Camera not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
             # Always return HTTP 200 so the frontend can read ai_monitoring_enabled
             # even when no in-process monitor is running (e.g. after a server restart).
+            # Get specific monitor status
             stats = monitor_manager.get_monitor_stats(camera_id)
 
             # Read the persisted DB flag — this is the source of truth across restarts
-            ai_monitoring_enabled = False
-            try:
-                cam = Camera.objects.get(pk=camera_id)
-                ai_monitoring_enabled = bool(cam.ai_monitoring_enabled)
-            except Camera.DoesNotExist:
-                return Response(
-                    {'error': f'Camera {camera_id} not found'},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
+            ai_monitoring_enabled = bool(cam.ai_monitoring_enabled)
 
             return Response({
                 'camera_id':             camera_id,
@@ -726,11 +723,13 @@ class MonitorStatusView(views.APIView):
                 'ai_monitoring_enabled': ai_monitoring_enabled,
             }, status=status.HTTP_200_OK)
         else:
-            # Get all monitors
+            # Get all monitors (only cameras in this branch)
             all_stats = monitor_manager.get_all_stats()
+            allowed = {str(c.id) for c in scoped_cameras(request.user).only('id')}
+            filtered = {k: v for k, v in all_stats.items() if k in allowed}
             return Response({
-                'monitors': all_stats,
-                'total_monitors': len(all_stats)
+                'monitors': filtered,
+                'total_monitors': len(filtered)
             }, status=status.HTTP_200_OK)
 
 

@@ -15,6 +15,13 @@ class Camera(models.Model):
     ]
     
     id = ObjectIdAutoField(primary_key=True)
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.CASCADE,
+        related_name='cameras',
+        null=True,
+        blank=True,
+    )
     name = models.CharField(max_length=255)
     rtsp_url = models.CharField(max_length=512)
     location = models.CharField(max_length=255)

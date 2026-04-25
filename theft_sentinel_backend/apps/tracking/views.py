@@ -7,6 +7,9 @@ from rest_framework.permissions import IsAuthenticated
 from django.utils import timezone
 from datetime import timedelta
 
+from apps.accounts.permissions import IsApprovedBranchUser
+from config.tenant_scope import scoped_tracking_records
+
 from .models import TrackingRecord
 from .serializers import TrackingRecordSerializer, TrackingRecordCreateSerializer
 from .services import TrackingService
@@ -16,7 +19,7 @@ from rest_framework.exceptions import NotFound
 class TrackingRecordListCreateView(generics.ListCreateAPIView):
     """List all tracking records or create new"""
     queryset = TrackingRecord.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -36,7 +39,7 @@ class TrackingRecordListCreateView(generics.ListCreateAPIView):
             })
     
     def get_queryset(self):
-        queryset = TrackingRecord.objects.select_related('camera_id').all()
+        queryset = scoped_tracking_records(self.request.user).select_related('camera_id')
         
         # Filter by person_id
         person_id = self.request.query_params.get('person_id', None)
@@ -64,15 +67,15 @@ class TrackingRecordDetailView(generics.RetrieveAPIView):
     """Retrieve a tracking record"""
     queryset = TrackingRecord.objects.all()
     serializer_class = TrackingRecordSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_queryset(self):
-        return TrackingRecord.objects.select_related('camera_id').all()
+        return scoped_tracking_records(self.request.user).select_related('camera_id')
 
 
 class PersonTrackingPathView(views.APIView):
     """Get tracking path for a person across cameras"""
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get(self, request, person_id):
         """
@@ -85,7 +88,8 @@ class PersonTrackingPathView(views.APIView):
         
         tracking_path = TrackingService.track_person_across_cameras(
             person_id=person_id,
-            time_window_minutes=time_window
+            time_window_minutes=time_window,
+            tenant_id=request.user.tenant_id,
         )
         
         return Response({
@@ -100,7 +104,7 @@ class TrackingIngestView(views.APIView):
     """
     Ingest tracking data from AI detection system
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def post(self, request):
         """
@@ -120,7 +124,7 @@ class TrackingIngestView(views.APIView):
             vector_data = data.get('vector', {})
             data['person_id'] = TrackingService.generate_person_id(vector_data)
         
-        serializer = TrackingRecordCreateSerializer(data=data)
+        serializer = TrackingRecordCreateSerializer(data=data, context={'request': request})
         
         if serializer.is_valid():
             tracking_record = serializer.save()

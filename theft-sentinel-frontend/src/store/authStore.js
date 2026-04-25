@@ -38,6 +38,7 @@ export const hasPermission = (user, permission) => {
   if (!user) return false;
   
   const rolePermissions = {
+    SUPER_ADMIN: ['super_admin'],
     ADMIN: ['all'],
     SECURITY_INCHARGE: [
       'view_alerts',

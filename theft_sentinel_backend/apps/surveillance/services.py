@@ -86,8 +86,10 @@ class SurveillanceService:
             'confidence': surveillance_event.ai_data.get('confidence', 0),
         }
         
+        cam = surveillance_event.camera_id
         alert = Alert.objects.create(
-            camera_id=surveillance_event.camera_id,
+            camera_id=cam,
+            tenant_id=cam.tenant_id,
             alert_type=surveillance_event.event_type,
             severity=severity,
             status='ACTIVE',
@@ -139,6 +141,7 @@ class SurveillanceService:
         
         incident = Incident.objects.create(
             alert_id=alert,
+            tenant_id=alert.tenant_id,
             status='CREATED',
             notes=f"Auto-created from alert #{alert.id} - {alert.alert_type}"
         )

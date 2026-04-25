@@ -37,6 +37,8 @@ const Navbar = () => {
         return 'Security In-Charge';
       case 'SECURITY_GUARD':
         return 'Security Guard';
+      case 'SUPER_ADMIN':
+        return 'Super Admin';
       default:
         return role || 'User';
     }
@@ -49,7 +51,10 @@ const Navbar = () => {
         <div className="flex justify-between items-center h-16">
           {/* Left: Logo */}
           <div className="flex items-center space-x-6 flex-1">
-            <Link to="/dashboard" className="flex items-center space-x-2 group">
+            <Link
+              to={user?.role === 'SUPER_ADMIN' ? '/super-admin/dashboard' : '/dashboard'}
+              className="flex items-center space-x-2 group"
+            >
               <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-ai-blue to-ai-purple flex items-center justify-center shadow-glow-ai group-hover:shadow-glow-ai-lg transition-all">
                 <CpuChipIcon className="h-6 w-6 text-dark-bg" />
               </div>
@@ -73,6 +78,11 @@ const Navbar = () => {
                 <p className="text-xs text-dark-text-muted">
                   {getRoleDisplay(user?.role)}
                 </p>
+                {user?.role !== 'SUPER_ADMIN' && (user?.tenant_display || user?.tenant_name) && (
+                  <p className="text-xs text-ai-blue/90 mt-0.5 max-w-[14rem] truncate" title={user.tenant_display || user.tenant_name}>
+                    {user.tenant_display || user.tenant_name}
+                  </p>
+                )}
               </div>
             </div>
             

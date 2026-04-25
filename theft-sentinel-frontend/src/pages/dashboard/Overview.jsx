@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useRecoilValue } from 'recoil';
-import { isAuthenticatedState } from '../../store/authStore';
+import { authUserState, isAuthenticatedState } from '../../store/authStore';
 import { getDashboardOverview } from '../../api/dashboard';
 import StatsCard from '../../components/StatsCard';
 import {
@@ -18,6 +18,7 @@ const Overview = () => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const isAuthenticated = useRecoilValue(isAuthenticatedState);
+  const user = useRecoilValue(authUserState);
 
   useEffect(() => {
     // Only fetch data if authenticated
@@ -66,6 +67,9 @@ const Overview = () => {
             Dashboard <span className="text-gradient-ai">Overview</span>
           </h1>
           <p className="text-dark-text-muted">Real-time system monitoring and analytics</p>
+          {user?.role !== 'SUPER_ADMIN' && (user?.tenant_display || user?.tenant_name) && (
+            <p className="text-sm text-ai-blue/90 mt-1">{user.tenant_display || user.tenant_name}</p>
+          )}
         </div>
         <button
           onClick={fetchDashboardData}

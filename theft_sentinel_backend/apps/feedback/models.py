@@ -11,6 +11,13 @@ class Feedback(models.Model):
     """Feedback model for user feedback"""
     
     id = ObjectIdAutoField(primary_key=True)
+    tenant = models.ForeignKey(
+        'tenants.Tenant',
+        on_delete=models.CASCADE,
+        related_name='feedbacks',
+        null=True,
+        blank=True,
+    )
     TYPE_CHOICES = [
         ('GENERAL', 'General'),
         ('INCIDENT', 'Incident Related'),

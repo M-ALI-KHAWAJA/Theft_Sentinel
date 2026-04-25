@@ -12,7 +12,8 @@ import requests
 
 from .models import Camera
 from .serializers import CameraSerializer, CameraCreateSerializer, CameraStatusUpdateSerializer
-from apps.accounts.permissions import CanManageCameras, CanViewCameraFeeds
+from apps.accounts.permissions import CanManageCameras, CanViewCameraFeeds, IsApprovedBranchUser
+from config.tenant_scope import scoped_cameras
 
 
 class CameraListCreateView(generics.ListCreateAPIView):
@@ -22,7 +23,7 @@ class CameraListCreateView(generics.ListCreateAPIView):
     Only Admin can add/edit/delete cameras
     """
     queryset = Camera.objects.all()
-    permission_classes = [IsAuthenticated, CanManageCameras]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanManageCameras]
     
     def get_serializer_class(self):
         if self.request.method == 'POST':
@@ -30,7 +31,7 @@ class CameraListCreateView(generics.ListCreateAPIView):
         return CameraSerializer
     
     def get_queryset(self):
-        queryset = Camera.objects.all()
+        queryset = scoped_cameras(self.request.user)
         
         # Filter by zone
         zone = self.request.query_params.get('zone', None)
@@ -44,6 +45,9 @@ class CameraListCreateView(generics.ListCreateAPIView):
         
         return queryset.order_by('-created_at')
 
+    def perform_create(self, serializer):
+        serializer.save(tenant=self.request.user.tenant)
+
 
 class CameraDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
@@ -53,7 +57,10 @@ class CameraDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
     queryset = Camera.objects.all()
     serializer_class = CameraSerializer
-    permission_classes = [IsAuthenticated, CanManageCameras]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanManageCameras]
+
+    def get_queryset(self):
+        return scoped_cameras(self.request.user)
 
 
 class CameraStatusUpdateView(views.APIView):
@@ -61,12 +68,11 @@ class CameraStatusUpdateView(views.APIView):
     Update camera status
     Only Admin can update camera status
     """
-    permission_classes = [IsAuthenticated, CanManageCameras]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanManageCameras]
     
     def patch(self, request, pk):
-        try:
-            camera = Camera.objects.get(pk=pk)
-        except Camera.DoesNotExist:
+        camera = scoped_cameras(request.user).filter(pk=pk).first()
+        if not camera:
             return Response(
                 {'error': 'Camera not found'},
                 status=status.HTTP_404_NOT_FOUND
@@ -87,11 +93,11 @@ class CamerasByZoneView(generics.ListAPIView):
     All authenticated users can view cameras
     """
     serializer_class = CameraSerializer
-    permission_classes = [IsAuthenticated, CanViewCameraFeeds]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewCameraFeeds]
     
     def get_queryset(self):
         zone = self.kwargs.get('zone')
-        return Camera.objects.filter(zone=zone).order_by('name')
+        return scoped_cameras(self.request.user).filter(zone=zone).order_by('name')
 
 
 class CameraStreamURLView(views.APIView):
@@ -100,12 +106,11 @@ class CameraStreamURLView(views.APIView):
     All authenticated users can view camera feeds
     (Admin, Security In-Charge, Security Guard)
     """
-    permission_classes = [IsAuthenticated, CanViewCameraFeeds]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, CanViewCameraFeeds]
     
     def get(self, request, pk):
-        try:
-            camera = Camera.objects.get(pk=pk)
-        except Camera.DoesNotExist:
+        camera = scoped_cameras(request.user).filter(pk=pk).first()
+        if not camera:
             return JsonResponse(
                 {'error': 'Camera not found'},
                 status=404

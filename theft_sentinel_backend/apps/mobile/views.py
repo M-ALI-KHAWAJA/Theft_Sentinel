@@ -20,7 +20,8 @@ from .serializers import (
     BulkNotificationSerializer
 )
 from .services import NotificationService
-from apps.accounts.permissions import IsAdminOrIncharge
+from apps.accounts.permissions import IsAdminOrIncharge, IsApprovedBranchUser
+from config.tenant_scope import scoped_notifications
 
 User = get_user_model()
 
@@ -34,24 +35,15 @@ class NotificationListView(generics.ListAPIView):
     - Security In-Charge & Security Guard: Can view only their own notifications
     """
     serializer_class = NotificationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_queryset(self):
-        queryset = Notification.objects.select_related('user').all()
+        queryset = scoped_notifications(self.request.user).select_related('user')
         
-        # Admin: Can view all notifications
-        if self.request.user.role == 'ADMIN':
-            pass  # No filtering
-        else:
-            # Security In-Charge & Security Guard: Only view their own notifications
-            queryset = queryset.filter(user=self.request.user)
-        
-        # Filter by status
         status_filter = self.request.query_params.get('status', None)
         if status_filter:
             queryset = queryset.filter(status=status_filter)
         
-        # Filter by type
         type_filter = self.request.query_params.get('type', None)
         if type_filter:
             queryset = queryset.filter(notification_type=type_filter)
@@ -67,7 +59,7 @@ class MyNotificationsView(generics.ListAPIView):
     - All authenticated users can view their own notifications
     """
     serializer_class = NotificationSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser]
     
     def get_queryset(self):
         return Notification.objects.filter(
@@ -83,7 +75,7 @@ class SendSMSView(views.APIView):
     - Admin & Security In-Charge: Can send SMS notifications
     - Security Guard: Cannot send SMS notifications
     """
-    permission_classes = [IsAuthenticated, IsAdminOrIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrIncharge]
     
     def post(self, request):
         serializer = SendSMSSerializer(data=request.data)
@@ -115,7 +107,7 @@ class SendEmailView(views.APIView):
     - Admin & Security In-Charge: Can send email notifications
     - Security Guard: Cannot send email notifications
     """
-    permission_classes = [IsAuthenticated, IsAdminOrIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrIncharge]
     
     def post(self, request):
         serializer = SendEmailSerializer(data=request.data)
@@ -148,7 +140,7 @@ class BulkNotificationView(views.APIView):
     - Admin & Security In-Charge: Can send bulk notifications
     - Security Guard: Cannot send bulk notifications
     """
-    permission_classes = [IsAuthenticated, IsAdminOrIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrIncharge]
     
     def post(self, request):
         serializer = BulkNotificationSerializer(data=request.data)
@@ -160,7 +152,7 @@ class BulkNotificationView(views.APIView):
             send_sms = serializer.validated_data.get('send_sms', False)
             send_email = serializer.validated_data.get('send_email', True)
             
-            users = User.objects.filter(id__in=user_ids)
+            users = User.objects.filter(id__in=user_ids, tenant_id=request.user.tenant_id)
             
             results = {
                 'email_sent': 0,
@@ -197,7 +189,7 @@ class BulkNotificationView(views.APIView):
                                 results['sms_sent'] += 1
                             else:
                                 results['sms_failed'] += 1
-                    except:
+                    except Exception:
                         pass
             
             return Response(results, status=status.HTTP_200_OK)

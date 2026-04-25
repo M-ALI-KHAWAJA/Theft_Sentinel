@@ -138,15 +138,57 @@ class TrackingService:
     @staticmethod
     def track_person_across_cameras(person_id: str, time_window_minutes: int = 60) -> list:
         """
+<<<<<<< HEAD
+        Find similar feature vectors (stub for MVP)
+        
+        Args:
+            vector_data: Feature vector to compare
+            threshold: Similarity threshold (0-1)
+        
+        Returns:
+            list: List of similar tracking records
+        """
+        # Stub implementation
+        # In production, this would use:
+        # 1. Vector similarity search (cosine similarity, etc.)
+        # 2. Database with vector search capabilities (e.g., pgvector, Milvus)
+        # 3. Return matching records above threshold
+        
+        logger.info(f"Stub: Finding similar vectors with threshold {threshold}")
+        return []
+    
+    @staticmethod
+    def track_person_across_cameras(person_id, time_window_minutes=60, tenant_id=None):
+        """
+        Track a person across multiple cameras (stub for MVP)
+        
+        Args:
+            person_id: Person identifier
+            time_window_minutes: Time window for tracking
+        
+        Returns:
+            list: List of camera locations and timestamps
+=======
         Build a chronological movement path for a person across cameras.
 
         Returns a list of dicts with camera info and timestamps, ordered
         oldest → newest.
+>>>>>>> main
         """
         from .models import TrackingRecord
         from datetime import timedelta
 
         time_threshold = timezone.now() - timedelta(minutes=time_window_minutes)
+<<<<<<< HEAD
+        
+        records = TrackingRecord.objects.filter(
+            person_id=person_id,
+            timestamp__gte=time_threshold,
+        ).select_related('camera_id').order_by('timestamp')
+        if tenant_id is not None:
+            records = records.filter(camera_id__tenant_id=tenant_id)
+        
+=======
 
         records = (
             TrackingRecord.objects
@@ -155,6 +197,7 @@ class TrackingService:
             .order_by('timestamp')
         )
 
+>>>>>>> main
         tracking_path = []
         for record in records:
             tracking_path.append({

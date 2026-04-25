@@ -2,10 +2,14 @@
 Notification Service - SMS (Twilio) and Email
 """
 from django.conf import settings
-from django.core.mail import send_mail
+from django.contrib.auth import get_user_model
 from django.utils import timezone
+
+from config.email_utils import send_system_mail
 from .models import Notification
 import logging
+
+User = get_user_model()
 
 logger = logging.getLogger(__name__)
 
@@ -101,13 +105,11 @@ class NotificationService:
                 notification.save()
                 return False
             
-            # Send email
-            send_mail(
+            # Send email (system SMTP identity only)
+            send_system_mail(
                 subject=subject,
                 message=message,
-                from_email=settings.DEFAULT_FROM_EMAIL,
                 recipient_list=[email_address],
-                fail_silently=False,
             )
             
             notification.status = 'SENT'
@@ -161,23 +163,44 @@ class NotificationService:
                     results['email_sent'] += 1
                 else:
                     results['email_failed'] += 1
-            
-            # Send SMS if personnel profile exists with phone
-            try:
-                personnel = user.personnel_profile
-                if personnel.phone:
-                    success = NotificationService.send_sms(
-                        user=user,
-                        phone_number=personnel.phone,
-                        message=message
-                    )
-                    if success:
-                        results['sms_sent'] += 1
-                    else:
-                        results['sms_failed'] += 1
-            except:
-                pass
-        
+
+        # SMS: one message per alert to the branch tenant number (Twilio "to" = branch phone).
+        tenant = getattr(alert, 'tenant', None)
+        if tenant is None and getattr(alert, 'tenant_id', None):
+            from apps.tenants.models import Tenant
+
+            tenant = Tenant.objects.filter(pk=alert.tenant_id).first()
+        if tenant is None and getattr(alert, 'camera_id', None) is not None:
+            tenant = getattr(alert.camera_id, 'tenant', None)
+        to_number = tenant.phone_number if tenant else ''
+        if not to_number:
+            logger.info(
+                'No phone number found for tenant (branch SMS skipped) alert_id=%s tenant_id=%s',
+                getattr(alert, 'pk', None),
+                getattr(alert, 'tenant_id', None),
+            )
+        else:
+            primary_user = users[0] if users else None
+            if primary_user is None and tenant is not None:
+                primary_user = (
+                    User.objects.filter(tenant_id=tenant.pk, role='ADMIN', is_active=True).first()
+                )
+            if primary_user is None:
+                logger.info(
+                    'Branch SMS skipped: no user for notification audit row alert_id=%s',
+                    getattr(alert, 'pk', None),
+                )
+            else:
+                success = NotificationService.send_sms(
+                    user=primary_user,
+                    phone_number=to_number,
+                    message=message,
+                )
+                if success:
+                    results['sms_sent'] += 1
+                else:
+                    results['sms_failed'] += 1
+
         return results
     
     @staticmethod

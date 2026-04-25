@@ -6,17 +6,30 @@ import { authUserState, isAuthenticatedState } from '../store/authStore';
 import AdminLayout from '../layouts/AdminLayout';
 import InchargeLayout from '../layouts/InchargeLayout';
 import GuardLayout from '../layouts/GuardLayout';
+import SuperAdminLayout from '../layouts/SuperAdminLayout';
 
 // Auth Pages
 import Login from '../pages/auth/Login';
 import ForgotPassword from '../pages/auth/ForgotPassword';
 import ResetPassword from '../pages/auth/ResetPassword';
+import RegisterBranch from '../pages/auth/RegisterBranch';
+import CreateSuperAdmin from '../pages/auth/CreateSuperAdmin';
+import SuperAdminResetPassword from '../pages/auth/SuperAdminResetPassword';
+import TenantBranchAdminResetRequest from '../pages/auth/TenantBranchAdminResetRequest';
 
 // Landing Page
 import Landing from '../pages/Landing';
 
+// Super Admin
+import SuperAdminDashboard from '../pages/super-admin/Dashboard';
+import SuperAdminTenants from '../pages/super-admin/Tenants';
+import SuperAdminPasswordResetRequests from '../pages/super-admin/PasswordResetRequests';
+import SuperAdminProfile from '../pages/super-admin/Profile';
+import SuperAdminQueries from '../pages/super-admin/Queries';
+
 // Dashboard Pages
 import Overview from '../pages/dashboard/Overview';
+import BranchQueries from '../pages/dashboard/BranchQueries';
 import AlertsStats from '../pages/dashboard/AlertsStats';
 import IncidentsStats from '../pages/dashboard/IncidentsStats';
 import CamerasStats from '../pages/dashboard/CamerasStats';
@@ -64,14 +77,18 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
   const isAuthenticated = useRecoilValue(isAuthenticatedState);
   const user = useRecoilValue(authUserState);
 
-  // Redirect unauthenticated users to login
   if (!isAuthenticated) {
     return <Navigate to="/login" replace />;
   }
 
-  // Check role-based access
+  if (user?.role === 'SUPER_ADMIN') {
+    if (!allowedRoles || !allowedRoles.includes('SUPER_ADMIN')) {
+      return <Navigate to="/super-admin/dashboard" replace />;
+    }
+    return children;
+  }
+
   if (allowedRoles && user && !allowedRoles.includes(user.role)) {
-    // Redirect based on role
     if (user.role === 'SECURITY_GUARD') {
       return <Navigate to="/dashboard/guard" replace />;
     }
@@ -86,38 +103,25 @@ const PublicRoute = ({ children }) => {
   const isAuthenticated = useRecoilValue(isAuthenticatedState);
   const user = useRecoilValue(authUserState);
 
-  // Only redirect if we have both authentication token AND user data
-  // This prevents blank screens during initial load
   if (isAuthenticated && user) {
-    // Redirect authenticated users to their dashboard
+    if (user.role === 'SUPER_ADMIN') {
+      return <Navigate to="/super-admin/dashboard" replace />;
+    }
     if (user.role === 'SECURITY_GUARD') {
       return <Navigate to="/dashboard/guard" replace />;
     }
     return <Navigate to="/dashboard" replace />;
   }
 
-  // Always render children for unauthenticated users (including during initial load)
   return <>{children}</>;
-};
-
-// Role-based Home Redirect
-const RoleBasedRedirect = () => {
-  const user = useRecoilValue(authUserState);
-  
-  if (user?.role === 'SECURITY_GUARD') {
-    return <Navigate to="/dashboard/guard" replace />;
-  }
-  
-  return <Navigate to="/dashboard" replace />;
 };
 
 const AppRouter = () => {
   const user = useRecoilValue(authUserState);
 
-  // Select layout based on role
   const getLayout = () => {
     if (!user) return AdminLayout;
-    
+
     switch (user.role) {
       case 'ADMIN':
         return AdminLayout;
@@ -135,41 +139,88 @@ const AppRouter = () => {
   return (
     <BrowserRouter>
       <Routes>
-        {/* Public Routes - Redirect authenticated users to dashboard */}
-        <Route 
-          path="/" 
+        <Route
+          path="/"
           element={
             <PublicRoute>
               <Landing />
             </PublicRoute>
-          } 
+          }
         />
-        <Route 
-          path="/login" 
+        <Route
+          path="/login"
           element={
             <PublicRoute>
               <Login />
             </PublicRoute>
-          } 
+          }
         />
-        <Route 
-          path="/forgot-password" 
+        <Route
+          path="/super-admin/reset-password"
+          element={
+            <PublicRoute>
+              <SuperAdminResetPassword />
+            </PublicRoute>
+          }
+        />
+        <Route
+          path="/tenant/reset-password-request"
+          element={
+            <PublicRoute>
+              <TenantBranchAdminResetRequest />
+            </PublicRoute>
+          }
+        />
+        <Route path="/register-branch" element={<RegisterBranch />} />
+        <Route
+          path="/create-super-admin"
+          element={
+            <PublicRoute>
+              <CreateSuperAdmin />
+            </PublicRoute>
+          }
+        />
+        <Route
+          path="/forgot-password"
           element={
             <PublicRoute>
               <ForgotPassword />
             </PublicRoute>
-          } 
+          }
         />
-        <Route 
-          path="/reset-password" 
+        <Route
+          path="/reset-password/:token"
           element={
             <PublicRoute>
               <ResetPassword />
             </PublicRoute>
-          } 
+          }
+        />
+        <Route
+          path="/reset-password"
+          element={
+            <PublicRoute>
+              <ResetPassword />
+            </PublicRoute>
+          }
         />
 
-        {/* Protected Routes - All authenticated routes */}
+        <Route
+          path="/super-admin"
+          element={
+            <ProtectedRoute allowedRoles={['SUPER_ADMIN']}>
+              <SuperAdminLayout />
+            </ProtectedRoute>
+          }
+        >
+          <Route index element={<Navigate to="dashboard" replace />} />
+          <Route path="dashboard" element={<SuperAdminDashboard />} />
+          <Route path="tenants" element={<SuperAdminTenants />} />
+          <Route path="password-reset-requests" element={<SuperAdminPasswordResetRequests />} />
+          <Route path="queries" element={<SuperAdminQueries />} />
+          <Route path="profile" element={<SuperAdminProfile />} />
+        </Route>
+
         <Route
           element={
             <ProtectedRoute>
@@ -177,22 +228,29 @@ const AppRouter = () => {
             </ProtectedRoute>
           }
         >
-          {/* Dashboard Routes */}
-          <Route 
-            path="dashboard" 
+          <Route
+            path="dashboard"
             element={
               <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE']}>
                 <Overview />
               </ProtectedRoute>
-            } 
+            }
           />
-          <Route 
-            path="dashboard/guard" 
+          <Route
+            path="dashboard/guard"
             element={
               <ProtectedRoute allowedRoles={['SECURITY_GUARD']}>
                 <GuardDashboard />
               </ProtectedRoute>
-            } 
+            }
+          />
+          <Route
+            path="dashboard/platform-queries"
+            element={
+              <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE', 'SECURITY_GUARD']}>
+                <BranchQueries />
+              </ProtectedRoute>
+            }
           />
           <Route
             path="dashboard/alerts-stats"
@@ -235,7 +293,6 @@ const AppRouter = () => {
             }
           />
 
-          {/* Camera Routes */}
           <Route
             path="cameras"
             element={
@@ -269,7 +326,6 @@ const AppRouter = () => {
             }
           />
 
-          {/* Alert Routes */}
           <Route
             path="alerts"
             element={
@@ -295,7 +351,6 @@ const AppRouter = () => {
             }
           />
 
-          {/* Incident Routes */}
           <Route
             path="incidents"
             element={
@@ -322,7 +377,6 @@ const AppRouter = () => {
           />
           <Route path="incidents/:id" element={<IncidentView />} />
 
-          {/* Tracking Routes */}
           <Route
             path="tracking"
             element={
@@ -340,7 +394,6 @@ const AppRouter = () => {
             }
           />
 
-          {/* Feedback Routes */}
           <Route
             path="feedback"
             element={
@@ -349,13 +402,13 @@ const AppRouter = () => {
               </ProtectedRoute>
             }
           />
-          <Route 
-            path="feedback/create" 
+          <Route
+            path="feedback/create"
             element={
               <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE', 'SECURITY_GUARD']}>
                 <FeedbackCreate />
               </ProtectedRoute>
-            } 
+            }
           />
           <Route
             path="feedback/my"
@@ -366,7 +419,6 @@ const AppRouter = () => {
             }
           />
 
-          {/* Personnel Routes - Admin Only */}
           <Route
             path="personnel"
             element={
@@ -392,7 +444,6 @@ const AppRouter = () => {
             }
           />
 
-          {/* AI Routes - Admin and Security Incharge */}
           <Route
             path="ai/dashboard"
             element={
@@ -411,15 +462,7 @@ const AppRouter = () => {
           />
         </Route>
 
-        {/* 404 Route - Redirect to landing for unauthenticated, dashboard for authenticated */}
-        <Route 
-          path="*" 
-          element={
-            <PublicRoute>
-              <Navigate to="/" replace />
-            </PublicRoute>
-          } 
-        />
+        <Route path="*" element={<Navigate to="/" replace />} />
       </Routes>
     </BrowserRouter>
   );
