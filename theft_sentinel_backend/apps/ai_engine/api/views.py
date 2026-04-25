@@ -4,9 +4,30 @@ Provides endpoints for AI processing without modifying existing code
 """
 from rest_framework import status, views
 from rest_framework.response import Response
-from rest_framework.permissions import IsAuthenticated
+from rest_framework.permissions import IsAuthenticated, BasePermission
+
+
+class IsAdminOrSecurityIncharge(BasePermission):
+    """
+    Allow ADMIN and SECURITY_INCHARGE roles to control AI monitoring.
+    SECURITY_GUARD may view monitoring status but cannot start or stop it.
+    Returns a clear 403 with a human-readable message on rejection.
+    """
+    message = (
+        'You do not have permission to control AI monitoring. '
+        'Required role: ADMIN or SECURITY_INCHARGE.'
+    )
+    ALLOWED_ROLES = {'ADMIN', 'SECURITY_INCHARGE'}
+
+    def has_permission(self, request, view):
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return getattr(request.user, 'role', None) in self.ALLOWED_ROLES
+from django.http import StreamingHttpResponse
 from django.utils import timezone
+import json
 import logging
+import queue
 import time
 
 from apps.ai_engine.services.ai_service import ai_service
@@ -528,23 +549,11 @@ class HealthCheckView(views.APIView):
 class StartContinuousMonitorView(views.APIView):
     """
     POST /api/ai/monitor/start/
-    
-    Start continuous monitoring on a camera (processes live feed at full FPS)
-    
-    Body:
-    {
-        "camera_id": "abc123"
-    }
-    
-    Response:
-    {
-        "success": true,
-        "message": "Started continuous monitoring",
-        "camera_id": "abc123",
-        "camera_name": "Ali Mobile"
-    }
+
+    Start continuous monitoring on a camera (processes live feed at full FPS).
+    Requires ADMIN or SECURITY_INCHARGE role; returns 403 otherwise.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminOrSecurityIncharge]
     
     def post(self, request):
         from ..services.continuous_monitor import monitor_manager
@@ -595,14 +604,19 @@ class StartContinuousMonitorView(views.APIView):
         
         # Start monitoring
         success = monitor_manager.start_monitor(str(camera.id), camera.rtsp_url)
-        
+
         if success:
+            # ── Persist to MongoDB so the toggle survives server restarts ──
+            camera.ai_monitoring_enabled = True
+            camera.save(update_fields=['ai_monitoring_enabled'])
+
             return Response({
                 'success': True,
                 'message': 'Started continuous monitoring',
                 'already_running': False,
                 'camera_id': str(camera.id),
                 'camera_name': camera.name,
+                'ai_monitoring_enabled': True,
                 'rtsp_url_preview': camera.rtsp_url[:50] + '...' if len(camera.rtsp_url) > 50 else camera.rtsp_url,
             }, status=status.HTTP_200_OK)
         else:
@@ -616,22 +630,13 @@ class StartContinuousMonitorView(views.APIView):
 class StopContinuousMonitorView(views.APIView):
     """
     POST /api/ai/monitor/stop/
-    
-    Stop continuous monitoring on a camera
-    
-    Body:
-    {
-        "camera_id": "abc123"
-    }
-    
-    Response:
-    {
-        "success": true,
-        "message": "Stopped monitoring",
-        "camera_id": "abc123"
-    }
+
+    Stop continuous monitoring on a camera.
+    Requires ADMIN or SECURITY_INCHARGE role; returns 403 otherwise.
+    Always returns 200 — "monitor not found" means it is already stopped,
+    which is the desired outcome, so it is treated as a success.
     """
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, IsAdminOrSecurityIncharge]
     
     def post(self, request):
         from ..services.continuous_monitor import monitor_manager
@@ -642,21 +647,29 @@ class StopContinuousMonitorView(views.APIView):
                 {'error': 'camera_id is required'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         success = monitor_manager.stop_monitor(camera_id)
-        
-        if success:
-            return Response({
-                'success': True,
-                'message': 'Stopped monitoring',
-                'camera_id': camera_id,
-            }, status=status.HTTP_200_OK)
-        else:
-            return Response({
-                'success': False,
-                'error': 'No monitor found for this camera',
-                'camera_id': camera_id,
-            }, status=status.HTTP_404_NOT_FOUND)
+
+        # ── Persist the OFF state to MongoDB regardless of whether a monitor
+        # was actually running (handles double-stop gracefully) ─────────────
+        try:
+            cam = Camera.objects.get(pk=camera_id)
+            cam.ai_monitoring_enabled = False
+            cam.save(update_fields=['ai_monitoring_enabled'])
+        except Camera.DoesNotExist:
+            pass
+
+        # Both success=True (process killed) and success=False (process was already
+        # gone) result in HTTP 200.  From the frontend's perspective the desired
+        # outcome — monitoring is stopped — is achieved either way.  Returning 404
+        # would cause axios to throw, leaving the toggle stuck in the ON position.
+        return Response({
+            'success': True,
+            'message': 'Stopped monitoring' if success else 'Monitoring was not running (already stopped)',
+            'was_running': success,
+            'camera_id': camera_id,
+            'ai_monitoring_enabled': False,
+        }, status=status.HTTP_200_OK)
 
 
 class MonitorStatusView(views.APIView):
@@ -692,19 +705,26 @@ class MonitorStatusView(views.APIView):
         camera_id = request.query_params.get('camera_id')
         
         if camera_id:
-            # Get specific monitor status
+            # Always return HTTP 200 so the frontend can read ai_monitoring_enabled
+            # even when no in-process monitor is running (e.g. after a server restart).
             stats = monitor_manager.get_monitor_stats(camera_id)
-            if stats:
-                return Response({
-                    'camera_id': camera_id,
-                    'monitor': stats
-                }, status=status.HTTP_200_OK)
-            else:
-                return Response({
-                    'camera_id': camera_id,
-                    'monitor': None,
-                    'message': 'No monitor running for this camera'
-                }, status=status.HTTP_404_NOT_FOUND)
+
+            # Read the persisted DB flag — this is the source of truth across restarts
+            ai_monitoring_enabled = False
+            try:
+                cam = Camera.objects.get(pk=camera_id)
+                ai_monitoring_enabled = bool(cam.ai_monitoring_enabled)
+            except Camera.DoesNotExist:
+                return Response(
+                    {'error': f'Camera {camera_id} not found'},
+                    status=status.HTTP_404_NOT_FOUND,
+                )
+
+            return Response({
+                'camera_id':             camera_id,
+                'monitor':               stats,          # None if no process running
+                'ai_monitoring_enabled': ai_monitoring_enabled,
+            }, status=status.HTTP_200_OK)
         else:
             # Get all monitors
             all_stats = monitor_manager.get_all_stats()
@@ -712,4 +732,83 @@ class MonitorStatusView(views.APIView):
                 'monitors': all_stats,
                 'total_monitors': len(all_stats)
             }, status=status.HTTP_200_OK)
+
+
+def realtime_tracking_sse_view(request, pk):
+    """
+    GET /api/ai/cameras/<pk>/realtime-tracking/
+
+    Plain Django view (NOT a DRF APIView) so that DRF content negotiation is
+    never involved.  Using APIView caused a 406 Not Acceptable because DRF
+    found no renderer for the browser's "Accept: text/event-stream" header.
+
+    Server-Sent Events stream that pushes lightweight JSON tracking payloads
+    to the frontend in real time.  The frontend overlays bounding boxes on
+    the raw MJPEG stream using an HTML5 <canvas> element — no server-side
+    drawing required.
+
+    Each SSE event payload:
+      {
+        "camera_id":       "...",
+        "timestamp":       "2026-04-22T10:00:00.123Z",
+        "frame_width":     1280,
+        "frame_height":    720,
+        "tracks":          [{"track_id":1,"global_id":5,"bbox":[x1,y1,x2,y2],
+                             "x3d_score":0.85,"confidence":0.92}],
+        "suspicious_ids":  [1],
+        "alert_triggered": true,
+        "classification":  "theft",
+        "confidence":      0.85
+      }
+
+    Authentication: open (no token required) — same policy as CameraFeedView.
+    The stream sends ": keepalive" comments every 25 s to keep proxies happy.
+    """
+    from django.http import JsonResponse as _JsonResponse
+
+    camera_id = str(pk)
+
+    # Verify the camera exists before opening a long-lived connection
+    try:
+        Camera.objects.get(pk=pk)
+    except Camera.DoesNotExist:
+        return _JsonResponse({'error': f'Camera {pk} not found'}, status=404)
+
+    from ..services.sse_registry import sse_registry
+
+    _QUEUE_TIMEOUT_S = 25.0
+
+    def event_stream():
+        q = sse_registry.subscribe(camera_id)
+        logger.info("SSE stream opened  camera=%s  remote=%s",
+                    camera_id, request.META.get('REMOTE_ADDR'))
+        try:
+            # Initial handshake — lets the client know the connection is live
+            yield f"data: {json.dumps({'type': 'connected', 'camera_id': camera_id})}\n\n"
+
+            while True:
+                try:
+                    # Block until a tracking result arrives or timeout
+                    line = q.get(timeout=_QUEUE_TIMEOUT_S)
+                    yield line          # already formatted as "data: {...}\n\n"
+                except queue.Empty:
+                    # SSE comment — keeps the TCP connection alive through
+                    # proxies / load balancers that time out idle streams
+                    yield ": keepalive\n\n"
+        except GeneratorExit:
+            pass
+        finally:
+            sse_registry.unsubscribe(camera_id, q)
+            logger.info("SSE stream closed  camera=%s  remote=%s",
+                        camera_id, request.META.get('REMOTE_ADDR'))
+
+    response = StreamingHttpResponse(
+        event_stream(),
+        content_type='text/event-stream; charset=utf-8',
+    )
+    response['Cache-Control'] = 'no-cache, no-store, must-revalidate'
+    response['Pragma'] = 'no-cache'
+    # Prevent nginx / gunicorn / proxies from buffering the stream
+    response['X-Accel-Buffering'] = 'no'
+    return response
 

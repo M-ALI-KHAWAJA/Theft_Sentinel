@@ -497,6 +497,272 @@ Authorization: Bearer <access_token>
 
 ---
 
+## 10. AI Engine Endpoints
+
+Base prefix: `/api/ai/`
+
+> All AI endpoints require `Authorization: Bearer <access_token>` **except**
+> the SSE real-time tracking stream and the health check, which are public so
+> the browser can open them without custom headers.
+
+### Analyze Single Frame
+**POST** `/ai/analyze-frame/`
+
+**Body:**
+```json
+{
+  "frame": "<base64-encoded JPEG>",
+  "camera_id": "abc123",
+  "create_alert_on_theft": true,
+  "save_to_db": true
+}
+```
+
+**Response (200):**
+```json
+{
+  "classification": "theft",
+  "confidence": 0.87,
+  "persons": 2,
+  "tracks": 2,
+  "alert_created": true,
+  "alert_id": "...",
+  "tracks_data": [...],
+  "suspicious_tracks": [...]
+}
+```
+
+---
+
+### Process Camera Frame
+**POST** `/ai/process-camera/`
+
+Captures a live frame from the camera's RTSP URL and runs inference.
+
+**Body:**
+```json
+{ "camera_id": "abc123" }
+```
+
+**Response:** Same structure as `/ai/analyze-frame/`.
+
+---
+
+### Full Pipeline (combined)
+**POST** `/ai/full-pipeline/`
+
+Accepts either `frame` (base64) or `camera_id`.
+
+---
+
+### Start Continuous Monitor
+**POST** `/ai/monitor/start/`
+
+Starts a background thread that processes the live camera stream at up to
+30 FPS and publishes results to SSE clients.
+
+**Body:**
+```json
+{ "camera_id": "abc123", "restart": false }
+```
+
+**Response (200):**
+```json
+{
+  "success": true,
+  "message": "Started continuous monitoring",
+  "camera_id": "abc123",
+  "camera_name": "Entrance Cam"
+}
+```
+
+---
+
+### Stop Continuous Monitor
+**POST** `/ai/monitor/stop/`
+
+**Body:**
+```json
+{ "camera_id": "abc123" }
+```
+
+**Response (200):**
+```json
+{ "success": true, "message": "Stopped monitoring", "camera_id": "abc123" }
+```
+
+---
+
+### Monitor Status
+**GET** `/ai/monitor/status/?camera_id=abc123`
+
+Returns processing stats (FPS, frames processed, last result) for one or all
+running monitors.
+
+**Response (200):**
+```json
+{
+  "monitors": {
+    "abc123": {
+      "camera_id": "abc123",
+      "is_running": true,
+      "frames_processed": 1523,
+      "fps": 28.5,
+      "elapsed_seconds": 53.4,
+      "error_count": 0,
+      "last_result": { "classification": "normal", "confidence": 0.12 }
+    }
+  },
+  "total_monitors": 1
+}
+```
+
+---
+
+### Real-Time Tracking SSE Stream *(Canvas Overlay)*
+**GET** `/api/ai/cameras/<camera_id>/realtime-tracking/`
+
+**Authentication:** None required (public — same policy as the MJPEG feed).
+Open with the browser's native `EventSource` API.
+
+**Protocol:** Server-Sent Events (`text/event-stream`).  
+The connection stays open indefinitely.  A `: keepalive` comment is sent
+every 25 seconds when there is no new tracking data so proxies do not
+time-out the connection.
+
+**Usage flow:**
+1. Start the continuous monitor for the camera (`POST /api/ai/monitor/start/`).
+2. Connect to this SSE endpoint — the frontend receives tracking payloads in
+   real time and draws bounding boxes on an HTML5 `<canvas>` overlaid on the
+   raw MJPEG feed.
+
+**Initial handshake event** (sent once on connection):
+```
+data: {"type": "connected", "camera_id": "abc123"}
+```
+
+**Tracking event** (sent at up to 10 FPS while the monitor is running):
+```
+data: {
+  "camera_id":      "abc123",
+  "timestamp":      "2026-04-22T10:00:00.123Z",
+  "frame_width":    1280,
+  "frame_height":   720,
+  "tracks": [
+    {
+      "track_id":   1,
+      "global_id":  5,
+      "bbox":       [120, 45, 260, 380],
+      "x3d_score":  0.87,
+      "confidence": 0.93
+    }
+  ],
+  "suspicious_ids":  [1],
+  "alert_triggered": true,
+  "classification":  "theft",
+  "confidence":      0.87
+}
+```
+
+**Field descriptions:**
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `camera_id` | string | Camera database ID |
+| `timestamp` | ISO-8601 string | Server-side timestamp of the processed frame |
+| `frame_width` | **integer** | **Native width** of the video frame that the AI pipeline processed (e.g. 1280). Source: `frame.shape[1]` in OpenCV. Required by the frontend to scale bbox coordinates. |
+| `frame_height` | **integer** | **Native height** of the video frame that the AI pipeline processed (e.g. 720). Source: `frame.shape[0]` in OpenCV. Required by the frontend to scale bbox coordinates. |
+| `tracks` | array | All active DeepSORT tracks in this frame |
+| `tracks[].track_id` | integer | Short-lived DeepSORT track ID (resets if track is lost) |
+| `tracks[].global_id` | integer | Cross-camera Re-ID global identity (persistent) |
+| `tracks[].bbox` | `[x1, y1, x2, y2]` | Bounding box **in native frame pixel coordinates** — must be scaled before drawing (see formula below) |
+| `tracks[].x3d_score` | float 0–1 | X3D activity score: ≥ 0.50 = suspicious, ≥ 0.80 = theft |
+| `tracks[].confidence` | float 0–1 | YOLO detection confidence for this person |
+| `suspicious_ids` | integer[] | `track_id` values whose `x3d_score ≥ 0.50` |
+| `alert_triggered` | boolean | `true` when `classification == "theft"` (x3d_score ≥ 0.80) |
+| `classification` | string | `"theft"` or `"normal"` |
+| `confidence` | float | Highest X3D score across all tracks in this frame |
+
+> **Important — Resolution Bridge:**  
+> `frame_width` / `frame_height` are the dimensions of the frame that was
+> passed to YOLO/DeepSORT.  The displayed video element may be a different
+> size (e.g. 640 CSS px wide for a 1280-px native frame).  
+> The frontend **must** scale every bbox coordinate before drawing.
+
+**Coordinate scaling — exact frontend formula:**
+```javascript
+// 1. Get the CSS-rendered size of the canvas element
+const scaleX = canvas.clientWidth  / frame_width;   // e.g. 640 / 1280 = 0.5
+const scaleY = canvas.clientHeight / frame_height;  // e.g. 360 / 720  = 0.5
+
+// 2. Map native bbox coords → canvas draw coords
+const drawX = bbox[0] * scaleX;           // x1
+const drawY = bbox[1] * scaleY;           // y1
+const drawW = (bbox[2] - bbox[0]) * scaleX;  // width
+const drawH = (bbox[3] - bbox[1]) * scaleY;  // height
+
+// 3. Draw
+ctx.strokeRect(drawX, drawY, drawW, drawH);
+```
+
+> `canvas.clientWidth` / `canvas.clientHeight` reflect the CSS-rendered
+> pixel dimensions of the `<canvas>` element.  Using these (rather than
+> `canvas.width` / `canvas.height`, which are the internal buffer dimensions)
+> ensures the formula remains correct regardless of how the page is laid out.
+
+**Drawing condition (frontend):**
+
+The canvas should redraw on every animation frame when:
+```
+alert_triggered === true  OR  suspicious_ids.length > 0
+```
+
+Only tracks whose `track_id` appears in `suspicious_ids`, **or** whose
+`x3d_score ≥ 0.50` while `alert_triggered` is `true`, should have a box
+drawn.
+
+**"Stop Tracking" interaction:**  
+The frontend exposes a "Stop Tracking" button that appears only when
+`alert_triggered` is `true`.  Clicking it sets a `manualOverride` flag that
+stops canvas drawing immediately (without disconnecting the SSE stream).
+The flag resets automatically when `alert_triggered` returns to `false` on
+the next SSE event.
+
+**z-index layering:**
+```
+<img>    z-index: 1   (raw video — background)
+<canvas> z-index: 10  (overlay — pointer-events: none so clicks pass through)
+buttons  z-index: 20  (interactive UI on top of both)
+```
+
+**Error (404) — camera not found:**
+```json
+{ "error": "Camera abc123 not found" }
+```
+
+---
+
+### Model Info
+**GET** `/ai/model-info/`
+
+Returns the names and load status of YOLO, OSNet, and X3D models.
+
+---
+
+### Inference History
+**GET** `/ai/inference-history/?camera_id=abc123&classification=theft&limit=50`
+
+---
+
+### AI Health Check
+**GET** `/ai/health/`  *(public)*
+
+```json
+{ "status": "healthy", "models_loaded": true, "device": "cuda" }
+```
+
+---
+
 ## Error Responses
 
 ### 400 Bad Request

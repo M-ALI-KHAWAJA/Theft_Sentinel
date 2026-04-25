@@ -3,23 +3,17 @@ Continuous Camera Monitoring Service
 Runs your existing AI pipeline continuously on camera streams
 Stores results in database for frontend to read in real-time
 """
-import cv2
+
 import os
-import sys
+os.environ["OPENH264_LIBRARY"] = r"Z:\FYP\fyp_application\env\Scripts\openh264-1.8.0-win64.dll"
+import cv2
 import tempfile
 import time
 import threading
 import logging
 from collections import deque
-from pathlib import Path
 from typing import Dict, Optional
-from datetime import datetime
 from django.utils import timezone
-
-# Add ModelExport to path
-BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
-MODEL_EXPORT_PATH = BASE_DIR / "ModelExport"
-sys.path.insert(0, str(MODEL_EXPORT_PATH))
 
 logger = logging.getLogger(__name__)
 
@@ -30,6 +24,10 @@ class ContinuousMonitor:
     Processes frames at full FPS (15-30) instead of 2-second intervals
     """
     
+    # Maximum rate at which the SSE callback is fired (frames per second).
+    # Keeps bandwidth low on cloud deployments while still giving smooth overlays.
+    _SSE_MAX_FPS: float = 10.0
+
     def __init__(self, camera_id: str, rtsp_url: str, callback=None):
         """
         Args:
@@ -40,22 +38,25 @@ class ContinuousMonitor:
         self.camera_id = camera_id
         self.rtsp_url = rtsp_url
         self.callback = callback
-        
+
         self.is_running = False
         self.thread = None
+        self.capture_thread = None
         self.cap = None
-        
+        self.latest_frame = None
+
         # Stats
         self.frames_processed = 0
+        self.frames_captured = 0
         self.start_time = None
         self.last_result = None
         self.error_count = 0
-        
+
         # Rolling frame buffer (~5s at 30 FPS) for theft clip generation
         self._frame_buffer = deque(maxlen=150)
-        
-        # Import your pipeline (lazy import)
-        self.pipeline = None
+
+        # Throttle SSE / callback publishing to _SSE_MAX_FPS
+        self._last_callback_time: float = 0.0
     
     def start(self):
         """Start continuous monitoring in background thread"""
@@ -64,6 +65,9 @@ class ContinuousMonitor:
             return False
         
         self.is_running = True
+        self.capture_thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self.capture_thread.start()
+        
         self.thread = threading.Thread(target=self._monitor_loop, daemon=True)
         self.thread.start()
         logger.info(f"🎥 Started continuous monitoring for camera {self.camera_id}")
@@ -72,6 +76,8 @@ class ContinuousMonitor:
     def stop(self):
         """Stop continuous monitoring"""
         self.is_running = False
+        if self.capture_thread:
+            self.capture_thread.join(timeout=5.0)
         if self.thread:
             self.thread.join(timeout=5.0)
         if self.cap:
@@ -83,30 +89,26 @@ class ContinuousMonitor:
         if self.start_time:
             elapsed = time.time() - self.start_time
             fps = self.frames_processed / elapsed if elapsed > 0 else 0
+            capture_fps = self.frames_captured / elapsed if elapsed > 0 else 0
         else:
             fps = 0
+            capture_fps = 0
             elapsed = 0
         
         return {
             'camera_id': self.camera_id,
             'is_running': self.is_running,
             'frames_processed': self.frames_processed,
+            'frames_captured': self.frames_captured,
             'fps': round(fps, 2),
+            'capture_fps': round(capture_fps, 2),
             'elapsed_seconds': round(elapsed, 2),
             'error_count': self.error_count,
             'last_result': self.last_result,
         }
     
-    def _monitor_loop(self):
-        """Main monitoring loop - runs continuously"""
-        from .inference_runner import InferenceRunner
-        from ..utils.frame_utils import capture_frame_from_rtsp
-        
-        logger.info(f"Initializing continuous monitoring for {self.rtsp_url}")
-        self.start_time = time.time()
-        runner = InferenceRunner()
-        
-        # Open video stream
+    def _capture_loop(self):
+        """Dedicated thread to read frames at full camera FPS"""
         processed_url = self._prepare_url(self.rtsp_url)
         self.cap = cv2.VideoCapture(processed_url)
         
@@ -114,10 +116,9 @@ class ContinuousMonitor:
             logger.error(f"Failed to open stream: {processed_url}")
             self.is_running = False
             return
-        
+            
         logger.info(f"✅ Stream opened successfully for camera {self.camera_id}")
         
-        # Process frames continuously
         while self.is_running:
             try:
                 ret, frame = self.cap.read()
@@ -139,40 +140,83 @@ class ContinuousMonitor:
                 
                 # Reset error count on success
                 self.error_count = 0
+                self.frames_captured += 1
+                self.latest_frame = frame.copy()
+                self._frame_buffer.append(self.latest_frame)
+                
+            except Exception as e:
+                logger.error(f"Error in capture loop: {str(e)}", exc_info=True)
+                self.error_count += 1
+                time.sleep(0.5)
+
+    def _monitor_loop(self):
+        """Main inference loop - runs at AI processing speed"""
+        from .inference_runner import InferenceRunner
+        from ..utils.frame_utils import capture_frame_from_rtsp
+        
+        logger.info(f"Initializing AI monitor loop for camera {self.camera_id}")
+        self.start_time = time.time()
+        runner = InferenceRunner()
+        
+        # Wait for the first frame from the capture thread
+        while self.is_running and self.latest_frame is None:
+            time.sleep(0.1)
+        
+        # Process frames continuously
+        while self.is_running:
+            try:
+                frame = self.latest_frame
+                if frame is None:
+                    time.sleep(0.1)
+                    continue
+                
                 self.frames_processed += 1
-                self._frame_buffer.append(frame.copy())
                 
                 # Run AI inference
-                result = runner.process_frame(frame, camera_id=self.camera_id)
+                result = runner.run_inference(frame, camera_id=self.camera_id)
                 result['timestamp'] = timezone.now().isoformat()
                 result['fps'] = self.get_stats()['fps']
-                
+                # Attach native frame dimensions so the frontend can scale bboxes
+                result['camera_id'] = self.camera_id
+                result['frame_width'] = frame.shape[1]
+                result['frame_height'] = frame.shape[0]
+
                 self.last_result = result
-                
-                # Save to database every 2 seconds (or on theft detection)
+
+                # ── CALLBACK FIRST ────────────────────────────────────────────
+                # Fire the SSE/WebSocket callback immediately after inference so
+                # the frontend canvas receives bounding-box data without waiting
+                # for the (slower) database write to complete.
+                # Throttled to _SSE_MAX_FPS to keep cloud bandwidth low.
+                if self.callback:
+                    now = time.time()
+                    min_interval = 1.0 / self._SSE_MAX_FPS
+                    if (now - self._last_callback_time) >= min_interval:
+                        self._last_callback_time = now
+                        try:
+                            self.callback(self.camera_id, result)
+                        except Exception as cb_err:
+                            logger.error("Callback raised an error: %s", cb_err)
+
+                # ── DB WRITE (after callback — latency non-critical) ──────────
+                # Save to database every 2 seconds (or immediately on theft)
+                current_fps = max(1, int(self.get_stats()['fps']))
                 should_save = (
-                    self.frames_processed % 60 == 0 or  # Every ~2 seconds at 30 FPS
+                    self.frames_processed % (current_fps * 2) == 0 or  # Every ~2 seconds
                     result['classification'] == 'theft'
                 )
                 
                 if should_save:
                     self._save_result(result)
                 
-                # Call callback if provided (for WebSocket updates)
-                if self.callback:
-                    self.callback(self.camera_id, result)
-                
-                # Optionally limit FPS (remove to run at full speed)
-                # time.sleep(0.033)  # ~30 FPS
+                # Persist tracking records (service handles its own throttle)
+                if result.get('tracks'):
+                    self._save_tracking_data(result)
                 
             except Exception as e:
                 logger.error(f"Error in monitoring loop: {str(e)}", exc_info=True)
-                self.error_count += 1
                 time.sleep(0.5)
         
-        # Cleanup
-        if self.cap:
-            self.cap.release()
         logger.info(f"Monitoring loop ended for camera {self.camera_id}")
     
     def _prepare_url(self, rtsp_url: str) -> str:
@@ -247,6 +291,18 @@ class ContinuousMonitor:
             logger.error(f"Failed to create alert: {str(e)}")
             return None
     
+    def _save_tracking_data(self, result: Dict):
+        """Persist confirmed tracks to the tracking_records collection."""
+        try:
+            from apps.tracking.services import TrackingService
+            TrackingService.save_tracks(
+                camera_id=self.camera_id,
+                tracks=result.get('tracks', []),
+                inference_result=result,
+            )
+        except Exception as e:
+            logger.error(f"Failed to save tracking data: {str(e)}")
+    
     def _try_upload_alert_clip(self, alert) -> None:
         """
         Snapshot the rolling frame buffer and upload a 5-second clip to Cloudinary
@@ -266,7 +322,8 @@ class ContinuousMonitor:
             django.setup.__module__  # ensure ORM is ready in this thread
 
             stats = self.get_stats()
-            fps = float(stats.get("fps") or 0)
+            # Use capture_fps for encoding to ensure real-time playback speed
+            fps = float(stats.get("capture_fps") or stats.get("fps") or 0)
             if fps < 5.0:
                 fps = 25.0  # safe fallback when FPS not yet settled
 
@@ -342,12 +399,27 @@ class MonitorManager:
         logger.info("📹 MonitorManager initialized")
     
     def start_monitor(self, camera_id: str, rtsp_url: str, callback=None) -> bool:
-        """Start monitoring a camera"""
+        """Start monitoring a camera.
+
+        The SSERegistry is always wired as the primary callback so that any
+        connected SSE client receives real-time tracking data automatically.
+        An optional secondary *callback* argument is still supported for
+        callers that need additional custom behaviour.
+        """
         if camera_id in self.monitors:
             logger.warning(f"Monitor already exists for camera {camera_id}")
             return False
-        
-        monitor = ContinuousMonitor(camera_id, rtsp_url, callback)
+
+        from .sse_registry import sse_registry
+
+        def _combined_callback(cam_id: str, result: dict) -> None:
+            # Always publish to SSE clients (no-op when no clients connected)
+            sse_registry.publish(cam_id, result)
+            # Also invoke any caller-supplied secondary callback
+            if callback:
+                callback(cam_id, result)
+
+        monitor = ContinuousMonitor(camera_id, rtsp_url, _combined_callback)
         if monitor.start():
             self.monitors[camera_id] = monitor
             return True

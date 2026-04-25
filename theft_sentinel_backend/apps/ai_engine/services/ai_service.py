@@ -1,9 +1,40 @@
 """
-AI Service
-Manages the AI pipeline lifecycle (loading models, initialization)
+AI Service — pipeline lifecycle manager (singleton).
+
+Loads the new stack:
+  • PersonDetector   (YOLOv8m)
+  • ReIDExtractor    (OSNet via torchreid, MobileNetV3 fallback)
+  • TheftClassifier  (X3D-S  —  x3d_theft_model.pth)
+  • CrossCameraMatcher (FAISS inner-product index)
+  • GlobalIdentityDatabase (in-memory, thread-safe internally)
+  • ClipBuffer        (per-global-id rolling frame store)
+
+Thread-safety contract
+----------------------
+inference_lock  — must be held around every GPU forward pass
+                  (YOLO detect, OSNet extract_batch, X3D predict).
+                  Prevents CUDA context contention when multiple
+                  ContinuousMonitor threads run simultaneously.
+
+state_lock      — must be held around every mutation of:
+                    matcher (FAISS index), clip_buffer,
+                    theft_scores, x3d_frame_counters.
+                  GlobalIdentityDatabase manages its own internal
+                  lock; callers do NOT need state_lock for db calls.
+
+Both locks are exposed as attributes so InferenceRunner (and any
+future consumer) share the exact same lock objects.
+
+Public interface (unchanged from old service):
+  AIService.get_instance()  → AIService singleton
+  .initialize()             → bool
+  .is_ready()               → bool
+  .get_model_info()         → dict  (JSON-serialisable)
+  .device                   → str
 """
+
 import os
-import sys
+import threading
 import torch
 import numpy as np
 from pathlib import Path
@@ -12,138 +43,214 @@ import logging
 
 logger = logging.getLogger(__name__)
 
-# Add ModelExport to path
-BASE_DIR = Path(__file__).resolve().parent.parent.parent.parent
-MODEL_EXPORT_PATH = BASE_DIR / "ModelExport"
-sys.path.insert(0, str(MODEL_EXPORT_PATH))
+# ── model path constants (no sys.path manipulation — ai_pipeline/ is a normal
+# package next to manage.py and has __init__.py in its root) ──────────────────
+_BACKEND_DIR     = Path(__file__).resolve().parent.parent.parent.parent
+_AI_PIPELINE_DIR = _BACKEND_DIR / "ai_pipeline"
 
-from ultralytics import YOLO
-from deep_sort_realtime.deepsort_tracker import DeepSort
-from ml_classifier.theft_classifier import TheftClassifier
+# ── pipeline imports (fully-qualified — zero bare module names) ───────────────
+from ai_pipeline.detection.detector   import PersonDetector
+from ai_pipeline.reid.extractor       import ReIDExtractor
+from ai_pipeline.x3d.classifier       import TheftClassifier, ClipBuffer
+from ai_pipeline.matching.matcher     import CrossCameraMatcher
+from ai_pipeline.database.identity_db import GlobalIdentityDatabase
+from ai_pipeline.ai_config.config     import Config
 
 
 class AIService:
     """
-    Singleton service to manage AI models
-    DO NOT MODIFY MODELEXPORT - ONLY WRAP IT
+    Singleton service for the new AI pipeline.
+
+    Usage
+    -----
+    service = AIService.get_instance()   # or AIService()
+    service.initialize()                 # called once in apps.py ready()
+    runner  = InferenceRunner()          # one per camera, shares service locks
     """
-    _instance = None
-    _initialized = False
-    
-    def __new__(cls):
+
+    _instance: Optional["AIService"] = None
+    _class_lock = threading.Lock()
+    _initialized: bool = False
+
+    # ── singleton machinery ───────────────────────────────────────────────────
+
+    def __new__(cls) -> "AIService":
         if cls._instance is None:
-            cls._instance = super(AIService, cls).__new__(cls)
+            with cls._class_lock:
+                if cls._instance is None:
+                    cls._instance = super().__new__(cls)
         return cls._instance
-    
-    def __init__(self):
-        if not self._initialized:
-            self.det_model = None
-            self.pose_model = None
-            self.deepsort = None
-            self.ml_classifier = None
-            self.device = "cpu"
-            
-            # Model paths (YOUR EXACT STRUCTURE)
-            self.det_model_path = MODEL_EXPORT_PATH / "yolov8l.pt"
-            self.pose_model_path = MODEL_EXPORT_PATH / "yolov8l-pose.pt"
-            self.ml_model_path = MODEL_EXPORT_PATH / "trained_models" / "theft_classifier.pkl"
-            
-            AIService._initialized = True
-    
-    def initialize(self):
+
+    @classmethod
+    def get_instance(cls) -> "AIService":
+        return cls()
+
+    def __init__(self) -> None:
+        if self._initialized:
+            return
+
+        # ── pipeline models (populated by initialize()) ───────────────────
+        self.detector:    Optional[PersonDetector]        = None
+        self.reid:        Optional[ReIDExtractor]         = None
+        self.x3d:         Optional[TheftClassifier]       = None
+        self.matcher:     Optional[CrossCameraMatcher]    = None
+        self.db:          Optional[GlobalIdentityDatabase] = None
+        self.clip_buffer: Optional[ClipBuffer]            = None
+
+        # ── shared per-global-id state (guarded by state_lock) ───────────
+        # global_id → latest X3D theft probability (None = not yet scored)
+        self.theft_scores:         Dict[int, Optional[float]] = {}
+        # global_id → frame counter used to throttle X3D calls
+        self.x3d_frame_counters:   Dict[int, int] = {}
+
+        # ── thread-safety locks (exposed so InferenceRunner shares them) ──
+        self.inference_lock = threading.Lock()   # GPU forward passes
+        self.state_lock     = threading.Lock()   # FAISS / ClipBuffer / counters
+
+        self.device: str = "cpu"
+
+        # ── model paths from Django settings (with safe fallbacks) ────────
+        try:
+            from django.conf import settings
+            self._yolo_weights = str(
+                getattr(settings, "AI_PIPELINE_YOLO_WEIGHTS",
+                        _AI_PIPELINE_DIR / "yolov8m.pt")
+            )
+            self._x3d_weights = str(
+                getattr(settings, "AI_PIPELINE_X3D_WEIGHTS",
+                        _AI_PIPELINE_DIR / "x3d_theft_model.pth")
+            )
+        except Exception:
+            self._yolo_weights = str(_AI_PIPELINE_DIR / "yolov8m.pt")
+            self._x3d_weights  = str(_AI_PIPELINE_DIR / "x3d_theft_model.pth")
+
+        AIService._initialized = True
+
+    # ── lifecycle ─────────────────────────────────────────────────────────────
+
+    def initialize(self) -> bool:
         """
-        Initialize all AI models
-        This is called once at startup
+        Load all pipeline models.  Called once by apps.AiEngineConfig.ready().
         """
         try:
-            logger.info("🚀 Initializing AI Service...")
-            
-            # Check CUDA availability
+            logger.info("🚀 Initialising AI Service (YOLOv8m + OSNet + X3D) …")
+
+            # ── Device ────────────────────────────────────────────────────
             if torch.cuda.is_available():
                 self.device = "cuda:0"
                 torch.backends.cudnn.benchmark = True
-                logger.info(f"✅ CUDA available: {torch.cuda.get_device_name(0)}")
+                logger.info(f"✅ CUDA: {torch.cuda.get_device_name(0)}")
             else:
                 self.device = "cpu"
-                logger.warning("⚠️ CUDA not available. Using CPU (slower)")
-            
-            # Load Detection Model
-            logger.info(f"📦 Loading detection model: {self.det_model_path}")
-            if not self.det_model_path.exists():
-                raise FileNotFoundError(f"Detection model not found: {self.det_model_path}")
-            
-            self.det_model = YOLO(str(self.det_model_path))
-            self.det_model.to(self.device)
-            logger.info("✅ Detection model loaded")
-            
-            # Load Pose Model
-            logger.info(f"📦 Loading pose model: {self.pose_model_path}")
-            if not self.pose_model_path.exists():
-                raise FileNotFoundError(f"Pose model not found: {self.pose_model_path}")
-            
-            self.pose_model = YOLO(str(self.pose_model_path))
-            self.pose_model.to(self.device)
-            logger.info("✅ Pose model loaded")
-            
-            # Initialize DeepSORT
-            logger.info("📦 Initializing DeepSORT tracker...")
-            embedder_gpu = self.device.startswith("cuda")
-            self.deepsort = DeepSort(
-                max_age=25,
-                n_init=3,
-                max_iou_distance=0.7,
-                max_cosine_distance=0.4,
-                nn_budget=100,
-                embedder="mobilenet",
-                embedder_gpu=embedder_gpu,
+                logger.warning("⚠️  CUDA not available — using CPU (slower)")
+
+            # Override Config class-attributes so every pipeline module
+            # sees the same device and model paths.
+            Config.DEVICE         = self.device.split(":")[0]   # "cuda" | "cpu"
+            Config.YOLO_MODEL     = self._yolo_weights
+            Config.X3D_MODEL_PATH = self._x3d_weights
+
+            # ── YOLOv8m detector ──────────────────────────────────────────
+            logger.info(f"📦 Loading YOLOv8m detector: {self._yolo_weights}")
+            self.detector = PersonDetector()
+            logger.info("✅ Detector loaded")
+
+            # ── OSNet ReID extractor ──────────────────────────────────────
+            logger.info("📦 Loading OSNet ReID extractor …")
+            self.reid = ReIDExtractor()
+            logger.info("✅ ReID extractor loaded")
+
+            # ── X3D-S classifier ──────────────────────────────────────────
+            logger.info(f"📦 Loading X3D classifier: {self._x3d_weights}")
+            self.x3d = TheftClassifier(self._x3d_weights, Config.DEVICE)
+            logger.info("✅ X3D classifier loaded")
+
+            # ── FAISS matcher ─────────────────────────────────────────────
+            logger.info("📦 Initialising FAISS cross-camera matcher …")
+            self.matcher = CrossCameraMatcher()
+            logger.info("✅ Matcher initialised")
+
+            # ── Global identity DB (pure in-memory) ───────────────────────
+            logger.info("📦 Initialising GlobalIdentityDatabase …")
+            self.db = GlobalIdentityDatabase()
+            logger.info("✅ Identity DB initialised")
+
+            # ── ClipBuffer (per-global-id X3D frame store) ────────────────
+            self.clip_buffer = ClipBuffer(max_frames=Config.X3D_CLIP_FRAMES)
+            logger.info(
+                f"✅ ClipBuffer ready "
+                f"(max_frames={Config.X3D_CLIP_FRAMES}, "
+                f"sampled={Config.X3D_CLIP_FRAMES} → 180 uniform)"
             )
-            logger.info("✅ DeepSORT initialized")
-            
-            # Load ML Classifier
-            logger.info(f"📦 Loading ML classifier: {self.ml_model_path}")
-            self.ml_classifier = TheftClassifier(str(self.ml_model_path))
-            if self.ml_classifier.model is not None:
-                logger.info("✅ ML classifier loaded")
-            else:
-                logger.warning("⚠️ ML classifier not loaded (file may not exist)")
-            
-            # Warmup models
-            logger.info("🔥 Warming up models...")
-            dummy_frame = np.zeros((640, 640, 3), dtype=np.uint8)
-            self.det_model(dummy_frame, imgsz=640, conf=0.5, verbose=False)
-            self.pose_model(dummy_frame, imgsz=320, conf=0.3, verbose=False)
-            if self.device.startswith("cuda"):
+
+            # ── YOLO warmup ───────────────────────────────────────────────
+            logger.info("🔥 Warming up YOLO …")
+            dummy = np.zeros((640, 640, 3), dtype=np.uint8)
+            self.detector.detect(dummy)
+            if torch.cuda.is_available():
                 torch.cuda.synchronize()
             logger.info("✅ Warmup complete")
-            
-            logger.info("✅ AI Service initialized successfully!")
+
+            logger.info("✅ AI Service ready (new pipeline)")
             return True
-            
-        except Exception as e:
-            logger.error(f"❌ Failed to initialize AI Service: {str(e)}")
+
+        except Exception as exc:
+            logger.error(f"❌ AI Service init failed: {exc}", exc_info=True)
             raise
-    
+
+    # ── public API (unchanged shapes) ─────────────────────────────────────────
+
     def is_ready(self) -> bool:
-        """Check if all models are loaded"""
+        """Return True when all six pipeline components are loaded."""
         return (
-            self.det_model is not None and
-            self.pose_model is not None and
-            self.deepsort is not None
+            self.detector    is not None
+            and self.reid        is not None
+            and self.x3d         is not None
+            and self.matcher     is not None
+            and self.db          is not None
+            and self.clip_buffer is not None
         )
-    
+
     def get_model_info(self) -> Dict[str, Any]:
-        """Get information about loaded models"""
+        """Return a JSON-serialisable dict describing loaded models."""
         return {
-            "detection_model": str(self.det_model_path),
-            "pose_model": str(self.pose_model_path),
-            "ml_classifier": str(self.ml_model_path),
-            "device": self.device,
-            "cuda_available": torch.cuda.is_available(),
-            "models_loaded": self.is_ready(),
-            "ml_classifier_loaded": self.ml_classifier is not None and self.ml_classifier.model is not None
+            "detection_model":       self._yolo_weights,
+            "reid_model":            f"OSNet ({Config.REID_MODEL_NAME})",
+            "x3d_model":             self._x3d_weights,
+            "x3d_clip_frames":       Config.X3D_CLIP_FRAMES,
+            "x3d_theft_threshold":   Config.X3D_THEFT_THRESHOLD,
+            "x3d_suspicious_threshold": Config.X3D_SUSPICIOUS_THRESHOLD,
+            "device":                self.device,
+            "cuda_available":        torch.cuda.is_available(),
+            "models_loaded":         self.is_ready(),
         }
 
+    # ── maintenance helpers (called from InferenceRunner) ─────────────────────
 
-# Singleton instance
+    def prune_expired_identities(self) -> None:
+        """Prune expired global IDs from DB, ClipBuffer, and counter dicts."""
+        # Collect expired IDs before pruning (DB has its own lock)
+        expired = [
+            gid for gid, rec in self.db.get_all_identities().items()
+            if rec.is_expired()
+        ]
+        self.db.prune_expired()
+        with self.state_lock:
+            for gid in expired:
+                self.theft_scores.pop(gid, None)
+                self.x3d_frame_counters.pop(gid, None)
+                self.clip_buffer.remove_person(gid)
+
+    def rebuild_matcher_index(self) -> None:
+        """Rebuild the FAISS index from current identity DB embeddings."""
+        identities = self.db.get_all_identities()
+        identity_data = {
+            gid: {"embedding_buffer": list(rec.embedding_buffer)}
+            for gid, rec in identities.items()
+        }
+        with self.state_lock:
+            self.matcher.rebuild_index(identity_data)
+
+
+# ── module-level singleton ────────────────────────────────────────────────────
 ai_service = AIService()
-
