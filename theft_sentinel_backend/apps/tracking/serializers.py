@@ -45,6 +45,7 @@ class TrackingRecordCreateSerializer(serializers.ModelSerializer):
         if not isinstance(value, (dict, list)):
             raise serializers.ValidationError("Vector must be a dictionary or list")
         return value
+<<<<<<< HEAD
 
     def validate_camera_id(self, value):
         request = self.context.get('request')
@@ -53,3 +54,5 @@ class TrackingRecordCreateSerializer(serializers.ModelSerializer):
                 raise serializers.ValidationError('Camera must belong to your branch.')
         return value
 
+=======
+>>>>>>> main

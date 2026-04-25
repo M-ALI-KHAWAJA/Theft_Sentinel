@@ -546,7 +546,7 @@ class StartContinuousMonitorView(views.APIView):
     Start continuous monitoring on a camera (processes live feed at full FPS).
     Requires ADMIN or SECURITY_INCHARGE role; returns 403 otherwise.
     """
-    permission_classes = [IsAuthenticated, IsAdminOrSecurityIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrSecurityIncharge]
     
     def post(self, request):
         from ..services.continuous_monitor import monitor_manager
@@ -628,7 +628,7 @@ class StopContinuousMonitorView(views.APIView):
     Always returns 200 — "monitor not found" means it is already stopped,
     which is the desired outcome, so it is treated as a success.
     """
-    permission_classes = [IsAuthenticated, IsAdminOrSecurityIncharge]
+    permission_classes = [IsAuthenticated, IsApprovedBranchUser, IsAdminOrSecurityIncharge]
     
     def post(self, request):
         from ..services.continuous_monitor import monitor_manager
@@ -638,6 +638,12 @@ class StopContinuousMonitorView(views.APIView):
             return Response(
                 {'error': 'camera_id is required'},
                 status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if not scoped_cameras(request.user).filter(pk=camera_id).exists():
+            return Response(
+                {'error': f'Camera not found: {camera_id}'},
+                status=status.HTTP_404_NOT_FOUND
             )
         success = monitor_manager.stop_monitor(camera_id)
 
@@ -696,20 +702,20 @@ class MonitorStatusView(views.APIView):
         camera_id = request.query_params.get('camera_id')
         
         if camera_id:
+            cam = scoped_cameras(request.user).filter(pk=camera_id).first()
+            if not cam:
+                return Response(
+                    {'error': 'Camera not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+            
             # Always return HTTP 200 so the frontend can read ai_monitoring_enabled
             # even when no in-process monitor is running (e.g. after a server restart).
+            # Get specific monitor status
             stats = monitor_manager.get_monitor_stats(camera_id)
 
             # Read the persisted DB flag — this is the source of truth across restarts
-            ai_monitoring_enabled = False
-            try:
-                cam = Camera.objects.get(pk=camera_id)
-                ai_monitoring_enabled = bool(cam.ai_monitoring_enabled)
-            except Camera.DoesNotExist:
-                return Response(
-                    {'error': f'Camera {camera_id} not found'},
-                    status=status.HTTP_404_NOT_FOUND,
-                )
+            ai_monitoring_enabled = bool(cam.ai_monitoring_enabled)
 
             return Response({
                 'camera_id':             camera_id,
