@@ -108,7 +108,7 @@ const Landing = () => {
   return (
     <>
       {/* Custom Keyframes for Animations */}
-      <style jsx>{`
+      <style>{`
         @keyframes scan {
           0% { top: 0%; opacity: 0; }
           10% { opacity: 1; }

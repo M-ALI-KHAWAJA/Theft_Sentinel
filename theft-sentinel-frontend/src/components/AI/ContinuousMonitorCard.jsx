@@ -1,6 +1,7 @@
 import PropTypes from 'prop-types';
 import { PlayIcon, StopIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
 import { useContinuousMonitor } from '../../hooks/useContinuousMonitor';
+import CameraFeedWithOverlay from '../CameraFeedWithOverlay';
 
 /**
  * Continuous Monitor Card Component
@@ -26,7 +27,19 @@ const ContinuousMonitorCard = ({ camera }) => {
   };
 
   return (
-    <div className={`rounded-lg border-2 shadow p-4 transition ${getStatusColor()}`}>
+    <div className={`rounded-lg border-2 shadow transition overflow-hidden ${getStatusColor()}`}>
+
+      {/* ── Camera feed with canvas bounding-box overlay ─────────────────── */}
+      <CameraFeedWithOverlay
+        cameraId={camera.id}
+        width="100%"
+        enableOverlay={isMonitoring}
+        className="rounded-t-lg"
+        viewMode="grid"
+      />
+
+      {/* ── Stats & controls ──────────────────────────────────────────────── */}
+      <div className="p-4">
       {/* Header */}
       <div className="flex items-center justify-between mb-3">
         <div>
@@ -105,19 +118,21 @@ const ContinuousMonitorCard = ({ camera }) => {
             <div>
               <span className="text-gray-600">Persons:</span>
               <span className="ml-1 font-semibold">
-                {typeof lastResult.persons === 'number' ? lastResult.persons : 0}
+                {lastResult.frame_metadata?.num_persons ?? 0}
               </span>
             </div>
             <div>
-              <span className="text-gray-600">Objects:</span>
+              <span className="text-gray-600">Detections:</span>
               <span className="ml-1 font-semibold">
-                {typeof lastResult.objects === 'number' ? lastResult.objects : 0}
+                {lastResult.frame_metadata?.num_detections ?? 0}
               </span>
             </div>
             <div>
               <span className="text-gray-600">Tracks:</span>
               <span className="ml-1 font-semibold">
-                {typeof lastResult.tracks === 'number' ? lastResult.tracks : 0}
+                {Array.isArray(lastResult.tracks)
+                  ? lastResult.tracks.length
+                  : (lastResult.frame_metadata?.num_tracks ?? 0)}
               </span>
             </div>
           </div>
@@ -165,9 +180,10 @@ const ContinuousMonitorCard = ({ camera }) => {
       {!isMonitoring && !error && (
         <div className="text-gray-400 text-sm py-4 text-center">
           <p>Click Start to begin continuous monitoring</p>
-          <p className="text-xs mt-1">Processing at 30 FPS</p>
+          <p className="text-xs mt-1">Processing at 30 FPS · canvas overlay enabled</p>
         </div>
       )}
+      </div>{/* end stats & controls */}
     </div>
   );
 };

@@ -7,14 +7,27 @@ from apps.cameras.serializers import CameraSerializer
 
 
 class TrackingRecordSerializer(serializers.ModelSerializer):
-    """Tracking Record serializer"""
+    """Tracking Record serializer — read-only, includes nested camera info"""
     id = serializers.CharField(read_only=True)  # MongoDB ObjectId as string
+    camera_id = serializers.CharField(source='camera_id_id', read_only=True)
     camera_details = CameraSerializer(source='camera_id', read_only=True)
+    camera_name = serializers.SerializerMethodField()
     
     class Meta:
         model = TrackingRecord
-        fields = ['id', 'person_id', 'camera_id', 'camera_details', 'vector', 'timestamp']
+        fields = [
+            'id', 'person_id', 'camera_id', 'camera_name', 'camera_details',
+            'vector', 'timestamp', 'confidence', 'location',
+            'global_id', 'x3d_score', 'bbox',
+        ]
         read_only_fields = ['id', 'timestamp']
+    
+    def get_camera_name(self, obj):
+        """Return the camera's name for easy frontend display."""
+        try:
+            return obj.camera_id.name
+        except Exception:
+            return str(obj.camera_id_id)
 
 
 class TrackingRecordCreateSerializer(serializers.ModelSerializer):
@@ -22,7 +35,10 @@ class TrackingRecordCreateSerializer(serializers.ModelSerializer):
     
     class Meta:
         model = TrackingRecord
-        fields = ['person_id', 'camera_id', 'vector']
+        fields = [
+            'person_id', 'camera_id', 'vector',
+            'confidence', 'location', 'global_id', 'x3d_score', 'bbox',
+        ]
     
     def validate_vector(self, value):
         """Ensure vector is a dict or list"""
