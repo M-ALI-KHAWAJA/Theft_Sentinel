@@ -57,6 +57,9 @@ class ContinuousMonitor:
 
         # Throttle SSE / callback publishing to _SSE_MAX_FPS
         self._last_callback_time: float = 0.0
+        
+        # 5-second cooldown for alerting
+        self.last_alert_time: float = 0.0
     
     def start(self):
         """Start continuous monitoring in background thread"""
@@ -180,6 +183,28 @@ class ContinuousMonitor:
                 result['camera_id'] = self.camera_id
                 result['frame_width'] = frame.shape[1]
                 result['frame_height'] = frame.shape[0]
+
+                # ── COOLDOWN GATEKEEPER ──────────────────────────────────────
+                is_theft_detected = result.get('classification') == 'theft'
+                current_time = time.time()
+                
+                if is_theft_detected and (current_time - self.last_alert_time) >= 5.0:
+                    self.last_alert_time = current_time
+                    # Proceed: Save DB Alert, Trigger VideoWriter, set is_suspicious=True
+                else:
+                    # COOLDOWN ACTIVE (or normal frame)
+                    # Force normal state for the JSON payload
+                    is_theft_detected = False
+                    result['classification'] = 'normal'
+                    if 'alert_triggered' in result:
+                        result['alert_triggered'] = False
+                    if 'suspicious_tracks' in result:
+                        result['suspicious_tracks'] = []
+                    # Ensure tracks don't have is_suspicious=True during cooldown
+                    if 'tracks' in result:
+                        for track in result['tracks']:
+                            if 'is_suspicious' in track:
+                                track['is_suspicious'] = False
 
                 self.last_result = result
 

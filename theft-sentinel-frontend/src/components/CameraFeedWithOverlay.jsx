@@ -58,15 +58,10 @@ const CameraFeedWithOverlay = memo(({
     suspicious_ids:  new Set(),
   });
 
-  // ── Single-Suspect LERP State ──────────────────────────────────────────────
-  // Task 1: Store visual vs target coordinates separately for LERP.
-  // visualBoxRef.current = { x, y, w, h, label, score, color }
-  // targetBoxRef.current = { x, y, w, h, lastUpdated, label, score, color }
-  const visualBoxRef = useRef(null);
-  const targetBoxRef = useRef(null);
-  
-  // Stores the global_id or track_id we are currently following.
-  const latchedIdRef = useRef(null); 
+  // ── Map-based Suspect LERP State ───────────────────────────────────────────
+  const latchedSuspectsRef = useRef(new Map());
+  const visualBoxRef = useRef({});
+  const targetBoxRef = useRef({}); 
 
   // ── Tracking & Alert UI State ──────────────────────────────────────────────
   const [isTrackingActive, setIsTrackingActive] = useState(false);
@@ -90,98 +85,58 @@ const CameraFeedWithOverlay = memo(({
 
     const now = performance.now();
     const tracks = trackingData.tracks || [];
-    let activeTrack = null;
 
-    if (latchedIdRef.current) {
-      activeTrack = tracks.find(
-        t => t.global_id === latchedIdRef.current || t.track_id === latchedIdRef.current
-      );
+    for (const track of tracks) {
+      const trackId = track.global_id || track.track_id;
 
-      // Task 2: Dynamic Adoption
-      // DeepSORT frequently drops an ID and creates a new one.
-      if (!activeTrack) {
-        let bestCandidate = null;
-        let minDistance = Infinity;
+      const isSuspicious = 
+        track.is_suspicious === true ||
+        frameMetaRef.current.suspicious_ids.has(track.global_id) ||
+        frameMetaRef.current.suspicious_ids.has(track.track_id) ||
+        (track.x3d_score ?? 0) >= SUSPICIOUS_THRESHOLD ||
+        trackingData.alert_triggered;
 
-        const tBox = targetBoxRef.current;
-        const tx = tBox ? tBox.x + tBox.w / 2 : 0;
-        const ty = tBox ? tBox.y + tBox.h / 2 : 0;
-
-        for (const track of tracks) {
-          const isSuspicious = 
-            frameMetaRef.current.suspicious_ids.has(track.global_id) ||
-            frameMetaRef.current.suspicious_ids.has(track.track_id) ||
-            (track.x3d_score ?? 0) >= SUSPICIOUS_THRESHOLD;
-
-          const [x1, y1, x2, y2] = track.bbox;
-          const cx = (x1 + x2) / 2;
-          const cy = (y1 + y2) / 2;
-          const dist = tBox ? Math.sqrt(Math.pow(cx - tx, 2) + Math.pow(cy - ty, 2)) : 0;
-
-          // Adopt if it's explicitly suspicious OR very close to the last known position (ID swap)
-          if (isSuspicious || dist < 150) {
-            if (dist < minDistance) {
-              minDistance = dist;
-              bestCandidate = track;
-            }
-          }
-        }
-
-        if (bestCandidate) {
-          activeTrack = bestCandidate;
-          latchedIdRef.current = activeTrack.global_id || activeTrack.track_id;
-        }
+      // Lock-On
+      if (isSuspicious) {
+        latchedSuspectsRef.current.set(trackId, now);
+      } 
+      // Keep Alive
+      else if (latchedSuspectsRef.current.has(trackId)) {
+        latchedSuspectsRef.current.set(trackId, now);
       }
-    }
 
-    // First time latching (if we don't have an active track yet)
-    if (!activeTrack && !latchedIdRef.current) {
-      for (const track of tracks) {
-        const isSuspicious = 
-          frameMetaRef.current.suspicious_ids.has(track.global_id) ||
-          frameMetaRef.current.suspicious_ids.has(track.track_id) ||
-          (track.x3d_score ?? 0) >= SUSPICIOUS_THRESHOLD ||
-          trackingData.alert_triggered;
-          
-        if (isSuspicious) {
-          activeTrack = track;
-          latchedIdRef.current = activeTrack.global_id || activeTrack.track_id;
-          break;
+      // Update target for LERP if they are latched
+      if (latchedSuspectsRef.current.has(trackId)) {
+        const [x1, y1, x2, y2] = track.bbox;
+        const x = x1;
+        const y = y1;
+        const w = x2 - x1;
+        const h = y2 - y1;
+        
+        const effectiveAlert = trackingData.alert_triggered;
+        const color = effectiveAlert ? '#FF1111' : '#FF8800';
+        const gid = track.global_id ?? '?';
+        const label = `SUSPECT G:${gid}`;
+        const score = `${((track.x3d_score ?? 0) * 100).toFixed(0)}%`;
+
+        targetBoxRef.current[trackId] = {
+          x, y, w, h,
+          lastUpdated: now,
+          label,
+          score,
+          color
+        };
+
+        if (!visualBoxRef.current[trackId]) {
+          visualBoxRef.current[trackId] = { x, y, w, h, label, score, color };
         }
-      }
-    }
-
-    // Update target for LERP
-    if (activeTrack) {
-      const [x1, y1, x2, y2] = activeTrack.bbox;
-      const x = x1;
-      const y = y1;
-      const w = x2 - x1;
-      const h = y2 - y1;
-      
-      const effectiveAlert = trackingData.alert_triggered;
-      const color = effectiveAlert ? '#FF1111' : '#FF8800';
-      const gid = activeTrack.global_id ?? '?';
-      const label = `SUSPECT G:${gid}`;
-      const score = `${((activeTrack.x3d_score ?? 0) * 100).toFixed(0)}%`;
-
-      targetBoxRef.current = {
-        x, y, w, h,
-        lastUpdated: now,
-        label,
-        score,
-        color
-      };
-
-      if (!visualBoxRef.current) {
-        visualBoxRef.current = { x, y, w, h, label, score, color };
       }
     }
 
     // Sync React state for button visibility without causing rapid renders
-    if (latchedIdRef.current && !isTrackingActive) {
+    if (latchedSuspectsRef.current.size > 0 && !isTrackingActive) {
       setIsTrackingActive(true);
-    } else if (!latchedIdRef.current && isTrackingActive) {
+    } else if (latchedSuspectsRef.current.size === 0 && isTrackingActive) {
       setIsTrackingActive(false);
     }
 
@@ -191,9 +146,14 @@ const CameraFeedWithOverlay = memo(({
 
   // ── Stop Tracking handler ──────────────────────────────────────────────────
   const handleStopTracking = useCallback(() => {
-    latchedIdRef.current = null;
-    targetBoxRef.current = null;
-    visualBoxRef.current = null;
+    latchedSuspectsRef.current.clear();
+    targetBoxRef.current = {};
+    visualBoxRef.current = {};
+    const canvas = canvasRef.current;
+    if (canvas) {
+      const ctx = canvas.getContext('2d');
+      ctx.clearRect(0, 0, canvas.width, canvas.height);
+    }
     setIsTrackingActive(false);
   }, []);
 
@@ -221,89 +181,91 @@ const CameraFeedWithOverlay = memo(({
     ctx.clearRect(0, 0, canvas.width, canvas.height);
 
     const now = performance.now();
-    const target = targetBoxRef.current;
-    const visual = visualBoxRef.current;
 
-    if (target && visual) {
-      // Task 1: The Grace Period Check
-      if (now - target.lastUpdated < 1500) {
-        // Calculate LERP, protected against NaN
-        const tX = Number.isFinite(target.x) ? target.x : visual.x;
-        const tY = Number.isFinite(target.y) ? target.y : visual.y;
-        const tW = Number.isFinite(target.w) ? target.w : visual.w;
-        const tH = Number.isFinite(target.h) ? target.h : visual.h;
+    for (const [trackId, timestamp] of latchedSuspectsRef.current.entries()) {
+      const target = targetBoxRef.current[trackId];
+      const visual = visualBoxRef.current[trackId];
 
-        visual.x += (tX - visual.x) * LERP_FACTOR;
-        visual.y += (tY - visual.y) * LERP_FACTOR;
-        visual.w += (tW - visual.w) * LERP_FACTOR;
-        visual.h += (tH - visual.h) * LERP_FACTOR;
+      if (target && visual) {
+        if (now - timestamp < 1500) {
+          // Calculate LERP, protected against NaN
+          const tX = Number.isFinite(target.x) ? target.x : visual.x;
+          const tY = Number.isFinite(target.y) ? target.y : visual.y;
+          const tW = Number.isFinite(target.w) ? target.w : visual.w;
+          const tH = Number.isFinite(target.h) ? target.h : visual.h;
 
-        if (Number.isNaN(visual.x)) visual.x = tX || 0;
-        if (Number.isNaN(visual.y)) visual.y = tY || 0;
-        if (Number.isNaN(visual.w)) visual.w = tW || 0;
-        if (Number.isNaN(visual.h)) visual.h = tH || 0;
+          visual.x += (tX - visual.x) * LERP_FACTOR;
+          visual.y += (tY - visual.y) * LERP_FACTOR;
+          visual.w += (tW - visual.w) * LERP_FACTOR;
+          visual.h += (tH - visual.h) * LERP_FACTOR;
 
-        if (visual.w > 0 && visual.h > 0) {
-          const meta     = frameMetaRef.current;
-          const nativeW  = meta.frame_width || 640;
-          const nativeH  = meta.frame_height || 480;
-          const displayW = canvas.clientWidth  || bufW;
-          const displayH = canvas.clientHeight || bufH;
-          const scaleX   = displayW / nativeW;
-          const scaleY   = displayH / nativeH;
+          if (Number.isNaN(visual.x)) visual.x = tX || 0;
+          if (Number.isNaN(visual.y)) visual.y = tY || 0;
+          if (Number.isNaN(visual.w)) visual.w = tW || 0;
+          if (Number.isNaN(visual.h)) visual.h = tH || 0;
 
-          const drawX = visual.x * scaleX;
-          const drawY = visual.y * scaleY;
-          const drawW = visual.w * scaleX;
-          const drawH = visual.h * scaleY;
+          if (visual.w > 0 && visual.h > 0) {
+            const meta     = frameMetaRef.current;
+            const nativeW  = meta.frame_width || 640;
+            const nativeH  = meta.frame_height || 480;
+            const displayW = canvas.clientWidth  || bufW;
+            const displayH = canvas.clientHeight || bufH;
+            const scaleX   = displayW / nativeW;
+            const scaleY   = displayH / nativeH;
 
-          ctx.save();
-          ctx.strokeStyle = target.color || '#FF8800';
-          ctx.lineWidth   = 2.5;
-          ctx.shadowColor = target.color || '#FF8800';
-          ctx.shadowBlur  = 6;
-          ctx.strokeRect(drawX, drawY, drawW, drawH);
-          ctx.restore();
+            const drawX = visual.x * scaleX;
+            const drawY = visual.y * scaleY;
+            const drawW = visual.w * scaleX;
+            const drawH = visual.h * scaleY;
 
-          const label = target.label || 'SUSPECT';
-          ctx.font = 'bold 12px "Courier New", monospace';
-          const textW = ctx.measureText(label).width;
+            ctx.save();
+            ctx.strokeStyle = target.color || '#FF8800';
+            ctx.lineWidth   = 2.5;
+            ctx.shadowColor = target.color || '#FF8800';
+            ctx.shadowBlur  = 6;
+            ctx.strokeRect(drawX, drawY, drawW, drawH);
+            ctx.restore();
 
-          const badgeColor = target.color === '#FF1111' ? 'rgba(220,0,0,0.85)' : 'rgba(200,100,0,0.85)';
-          
-          ctx.fillStyle = badgeColor;
-          ctx.beginPath();
-          if (ctx.roundRect) {
-            ctx.roundRect(drawX, drawY - 22, textW + 10, 22, [3, 3, 0, 0]);
-          } else {
-            ctx.rect(drawX, drawY - 22, textW + 10, 22);
+            const label = target.label || 'SUSPECT';
+            ctx.font = 'bold 12px "Courier New", monospace';
+            const textW = ctx.measureText(label).width;
+
+            const badgeColor = target.color === '#FF1111' ? 'rgba(220,0,0,0.85)' : 'rgba(200,100,0,0.85)';
+            
+            ctx.fillStyle = badgeColor;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+              ctx.roundRect(drawX, drawY - 22, textW + 10, 22, [3, 3, 0, 0]);
+            } else {
+              ctx.rect(drawX, drawY - 22, textW + 10, 22);
+            }
+            ctx.fill();
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.fillText(label, drawX + 5, drawY - 6);
+
+            const score = target.score || '0%';
+            const scoreW = ctx.measureText(score).width;
+
+            ctx.fillStyle = badgeColor;
+            ctx.beginPath();
+            if (ctx.roundRect) {
+              ctx.roundRect(drawX, drawY + drawH, scoreW + 10, 18, [0, 0, 3, 3]);
+            } else {
+              ctx.rect(drawX, drawY + drawH, scoreW + 10, 18);
+            }
+            ctx.fill();
+
+            ctx.fillStyle = '#FFFFFF';
+            ctx.font      = '11px "Courier New", monospace';
+            ctx.fillText(score, drawX + 5, drawY + drawH + 13);
           }
-          ctx.fill();
-
-          ctx.fillStyle = '#FFFFFF';
-          ctx.fillText(label, drawX + 5, drawY - 6);
-
-          const score = target.score || '0%';
-          const scoreW = ctx.measureText(score).width;
-
-          ctx.fillStyle = badgeColor;
-          ctx.beginPath();
-          if (ctx.roundRect) {
-            ctx.roundRect(drawX, drawY + drawH, scoreW + 10, 18, [0, 0, 3, 3]);
-          } else {
-            ctx.rect(drawX, drawY + drawH, scoreW + 10, 18);
-          }
-          ctx.fill();
-
-          ctx.fillStyle = '#FFFFFF';
-          ctx.font      = '11px "Courier New", monospace';
-          ctx.fillText(score, drawX + 5, drawY + drawH + 13);
+        } else {
+          // Off-Screen Cleanup: Person left the frame. Stop drawing them entirely.
+          latchedSuspectsRef.current.delete(trackId);
+          delete targetBoxRef.current[trackId];
+          delete visualBoxRef.current[trackId];
         }
-      } else {
-        // > 1500ms: Person left the frame. Stop drawing entirely.
-        targetBoxRef.current = null;
-        visualBoxRef.current = null;
-        latchedIdRef.current = null;
       }
     }
 
