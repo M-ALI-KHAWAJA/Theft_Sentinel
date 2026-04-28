@@ -119,6 +119,7 @@ def _build_payload(camera_id: str, result: dict) -> dict:
             "bbox":      t.get("bbox", [0, 0, 0, 0]),
             "x3d_score": round(float(t.get("x3d_score", 0.0)), 4),
             "confidence": round(float(t.get("confidence", 0.0)), 4),
+            "is_suspicious": t.get("is_suspicious", False),
         })
 
     suspicious_ids = {

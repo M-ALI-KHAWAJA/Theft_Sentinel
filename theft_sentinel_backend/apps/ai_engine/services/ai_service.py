@@ -40,6 +40,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Dict, Any
 import logging
+from django.core.cache import cache
 
 logger = logging.getLogger(__name__)
 
@@ -229,17 +230,9 @@ class AIService:
 
     def prune_expired_identities(self) -> None:
         """Prune expired global IDs from DB, ClipBuffer, and counter dicts."""
-        # Collect expired IDs before pruning (DB has its own lock)
-        expired = [
-            gid for gid, rec in self.db.get_all_identities().items()
-            if rec.is_expired()
-        ]
-        self.db.prune_expired()
-        with self.state_lock:
-            for gid in expired:
-                self.theft_scores.pop(gid, None)
-                self.x3d_frame_counters.pop(gid, None)
-                self.clip_buffer.remove_person(gid)
+        # CRITICAL: Identity memory must be permanent.
+        # DO NOT purge or delete global_ids from FAISS or the central database.
+        pass
 
     def rebuild_matcher_index(self) -> None:
         """Rebuild the FAISS index from current identity DB embeddings."""
@@ -250,6 +243,33 @@ class AIService:
         }
         with self.state_lock:
             self.matcher.rebuild_index(identity_data)
+
+
+# ── global suspect registry methods ───────────────────────────────────────────
+
+    def add_active_thief(self, global_id: int) -> None:
+        with self.state_lock:
+            gid_str = str(global_id)
+            thieves = cache.get('active_thief_global_ids', [])
+            thieves = [str(x) for x in thieves]
+            if gid_str not in thieves:
+                thieves.append(gid_str)
+                cache.set('active_thief_global_ids', thieves, timeout=None)
+            
+    def remove_active_thief(self, global_id: int) -> None:
+        with self.state_lock:
+            gid_str = str(global_id)
+            thieves = cache.get('active_thief_global_ids', [])
+            thieves = [str(x) for x in thieves]
+            if gid_str in thieves:
+                thieves.remove(gid_str)
+                cache.set('active_thief_global_ids', thieves, timeout=None)
+            
+    def is_active_thief(self, global_id: int) -> bool:
+        if global_id is None: return False
+        gid_str = str(global_id)
+        thieves = cache.get('active_thief_global_ids', [])
+        return gid_str in [str(x) for x in thieves]
 
 
 # ── module-level singleton ────────────────────────────────────────────────────

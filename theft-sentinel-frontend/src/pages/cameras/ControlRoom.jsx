@@ -1,10 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
 import { listCameras } from '../../api/cameras';
 import { useRecoilValue } from 'recoil';
-import { isAuthenticatedState } from '../../store/authStore';
+import { isAuthenticatedState, authUserState } from '../../store/authStore';
+import { useNavigate } from 'react-router-dom';
 import CameraCardWithAI from '../../components/CameraCardWithAI';
 import FullScreenCameraModal from '../../components/FullScreenCameraModal';
-import { VideoCameraIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import LiveTrackingNodeGraph from '../../components/LiveTrackingNodeGraph';
+import { VideoCameraIcon, ArrowPathIcon, PlusIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 
 /**
@@ -22,6 +24,9 @@ const ControlRoom = () => {
   });
   const [fullScreenCamera, setFullScreenCamera] = useState(null);
   const isAuthenticated = useRecoilValue(isAuthenticatedState);
+  const currentUser = useRecoilValue(authUserState);
+  const navigate = useNavigate();
+  const isAdmin = currentUser?.role === 'ADMIN';
 
   // Memoize fetch function to prevent unnecessary re-renders
   const fetchCameras = useCallback(async () => {
@@ -71,6 +76,14 @@ const ControlRoom = () => {
     setFullScreenCamera(null);
   };
 
+  const handleEdit = (camera) => {
+    navigate(`/cameras/edit/${camera.id}`);
+  };
+
+  const handleDelete = (camera) => {
+    navigate(`/cameras`, { state: { deleteId: camera.id } });
+  };
+
   // Filter cameras
   const filteredCameras = cameras.filter((camera) => {
     const matchesSearch = !filters.search || 
@@ -97,7 +110,7 @@ const ControlRoom = () => {
   }
 
   return (
-    <div className="space-y-6">
+    <div className="space-y-6 px-4">
       {/* Header */}
       <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
         <div>
@@ -107,6 +120,16 @@ const ControlRoom = () => {
           <p className="text-dark-text-muted">Live camera feeds and monitoring</p>
         </div>
         <div className="flex items-center gap-3">
+          {/* Add Camera (Admin only) */}
+          {isAdmin && (
+            <button
+              onClick={() => navigate('/cameras/create')}
+              className="flex items-center gap-2 px-4 py-2 rounded-lg font-semibold bg-ai-blue/20 text-ai-blue border border-ai-blue/50 hover:bg-ai-blue/30 transition-all duration-200"
+            >
+              <PlusIcon className="h-5 w-5" />
+              <span className="hidden sm:inline">Add Camera</span>
+            </button>
+          )}
           {/* Live Feeds Toggle */}
           <button
             onClick={() => setShowLiveFeeds(!showLiveFeeds)}
@@ -222,12 +245,17 @@ const ControlRoom = () => {
               key={camera.id}
               camera={camera}
               onViewFeed={handleViewFeed}
+              onEdit={isAdmin ? handleEdit : undefined}
+              onDelete={isAdmin ? handleDelete : undefined}
               showFeed={showLiveFeeds}
-              showActions={false} // Guards cannot edit/delete
+              showActions={isAdmin} // Only admins can edit/delete
             />
           ))}
         </div>
       )}
+
+      {/* Live Tracking Node Graph Footer */}
+      <LiveTrackingNodeGraph />
 
       {/* Full Screen Camera Modal */}
       <FullScreenCameraModal

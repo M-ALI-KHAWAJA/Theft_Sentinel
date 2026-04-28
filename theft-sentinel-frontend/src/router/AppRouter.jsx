@@ -247,7 +247,7 @@ const AppRouter = () => {
           <Route
             path="cameras/control-room"
             element={
-              <ProtectedRoute allowedRoles={['SECURITY_GUARD']}>
+              <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE', 'SECURITY_GUARD']}>
                 <ControlRoom />
               </ProtectedRoute>
             }

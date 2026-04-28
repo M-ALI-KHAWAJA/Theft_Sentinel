@@ -201,7 +201,7 @@ class InferenceRunner:
                 if existing_gid is not None:
                     used_global_ids.add(existing_gid)
 
-        for track_info, embedding in zip(valid_tracks, embeddings):
+        for i, (track_info, embedding) in enumerate(zip(valid_tracks, embeddings)):
             if embedding is None:
                 continue
 
@@ -256,9 +256,12 @@ class InferenceRunner:
                     # HIJACK PREVENTION: If the best match is already physically present
                     # in this frame, they cannot be the same person. Reject the match.
                     if best_match_gid is not None and best_match_gid in used_global_ids:
+                        print(f"🚫 [FAISS] DeepSORT ID {track_id} matched Global ID {best_match_gid}, but it's already in the frame! Rejecting.")
                         global_id = None
                     else:
                         global_id = best_match_gid
+
+                    print(f"🧬 [FAISS] DeepSORT ID {track_id} | Matched Global ID {global_id} | FAISS Score: {faiss_score} | DB Score: {db_score}")
 
                     if global_id is not None:
                         ai_service.db.update_identity(
@@ -291,10 +294,11 @@ class InferenceRunner:
                 "track_id":  track_id,
                 "global_id": global_id,
                 "bbox":      bbox,
-                "crop":      crops[valid_tracks.index(track_info)],
+                "crop":      crops[i],
                 "det_conf":  det_conf,
                 "x3d_score": 0.0,   # filled in step 7
             })
+            print(f"👀 [RE-ID CHECK] Local DeepSORT ID: {track_id} -> Global ID: {global_id}")
 
         # ── 6. Feed crops into ClipBuffer (state_lock) ────────────────────
         with ai_service.state_lock:
@@ -319,6 +323,9 @@ class InferenceRunner:
             if clip is not None:
                 # GPU call under inference_lock
                 with ai_service.inference_lock:
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()  # Force VRAM defragmentation for X3D tensor allocation
                     score = ai_service.x3d.predict(clip)
                 # Store result under state_lock
                 with ai_service.state_lock:
@@ -334,49 +341,90 @@ class InferenceRunner:
                 res["x3d_score"] = float(last) if last is not None else 0.0
 
         # ── 8. Build classification result ────────────────────────────────
-        # Clarification #1 — only ≥ 0.80 triggers "theft"; ≥ 0.50 is
+        # Clarification #1 — only >= 0.80 triggers "theft"; >= 0.50 is
         # "normal" but flagged as suspicious in metadata.
         highest_score = max((r["x3d_score"] for r in results), default=0.0)
 
-        if highest_score >= Config.X3D_THEFT_THRESHOLD:
-            classification = "theft"
-            confidence     = highest_score
-        else:
-            classification = "normal"
-            confidence     = highest_score   # raw score, never clamped
+        classification = "normal"
+        confidence     = highest_score
 
-        # suspicious_tracks: any global ID at or above suspicious threshold
-        suspicious_tracks = [
-            {
-                "track_id":  res["track_id"],
-                "global_id": res["global_id"],
-                "x3d_score": res["x3d_score"],
-            }
-            for res in results
-            if res["x3d_score"] >= Config.X3D_SUSPICIOUS_THRESHOLD
-        ]
+        if highest_score >= Config.X3D_THEFT_THRESHOLD:
+            # Check if all high-scoring persons are ALREADY active thieves
+            all_known = True
+            for res in results:
+                if res["x3d_score"] >= Config.X3D_THEFT_THRESHOLD:
+                    gid = res["global_id"]
+                    if gid is None or not ai_service.is_active_thief(gid):
+                        all_known = False
+                        if gid is not None:
+                            ai_service.add_active_thief(gid)
+            
+            # If there's at least one new thief (or an un-ID'd thief), trigger the alert!
+            if not all_known:
+                classification = "theft"
+
+        # Check global registry explicitly for all persons
+        suspicious_tracks = []
+        for res in results:
+            # Base suspicion on X3D score
+            is_susp = res["x3d_score"] >= Config.X3D_SUSPICIOUS_THRESHOLD
+            
+            # This must run for EVERY person, even if their x3d_score is 0.0
+            if res["global_id"] is not None:
+                is_thief = ai_service.is_active_thief(str(res["global_id"])) or ai_service.is_active_thief(res["global_id"])
+                # print(f"🔒 [REGISTRY] Checking Global ID {res['global_id']} | Is Active Thief? {is_thief}")
+                if is_thief:
+                    is_susp = True
+                
+            res["is_suspicious"] = is_susp
+            
+            if is_susp:
+                suspicious_tracks.append({
+                    "track_id":  res["track_id"],
+                    "global_id": res["global_id"],
+                    "x3d_score": res["x3d_score"],
+                })
 
         # ── 9. Periodic maintenance ───────────────────────────────────────
         if self._frame_idx % self._PRUNE_EVERY == 0:
             ai_service.prune_expired_identities()
         if self._frame_idx % self._REBUILD_EVERY == 0:
             ai_service.rebuild_matcher_index()
+            
+        if self._frame_idx % 30 == 0:
+            with ai_service.state_lock:
+                ai_service.clip_buffer.cleanup_stale_buffers()
 
         # ── 10. Assemble return dict (API contract preserved) ─────────────
         processing_time = (time.time() - start) * 1000.0
 
         # tracks list: include global_id as required by clarification #3
-        tracks_out = [
-            {
+        tracks_out = []
+        for res in results:
+            # 1. Determine base suspicion from current frame's AI score
+            is_susp = res.get("x3d_score", 0.0) >= Config.X3D_SUSPICIOUS_THRESHOLD
+
+            # 2. OVERRIDE: If they are a known thief in the registry, they are always suspicious
+            if res["global_id"] is not None:
+                # Ensure we cast to string just in case the cache returns strings
+                if ai_service.is_active_thief(str(res["global_id"])) or ai_service.is_active_thief(res["global_id"]):
+                    is_susp = True
+
+            track_dict = {
                 "track_id":  res["track_id"],
                 "global_id": res["global_id"],
                 "bbox":      res["bbox"],
                 "class":     "person",
                 "confidence": res["det_conf"],
                 "x3d_score": res["x3d_score"],
+                "is_suspicious": bool(is_susp),
             }
-            for res in results
-        ]
+            
+            # Debug print for known thieves
+            if track_dict.get("global_id") is not None and track_dict["is_suspicious"]:
+                print(f"📡 [PAYLOAD] Sending Global ID {track_dict['global_id']} with is_suspicious=True")
+                
+            tracks_out.append(track_dict)
 
         frame_metadata: Dict[str, Any] = {
             "frame_index":    self._frame_idx,

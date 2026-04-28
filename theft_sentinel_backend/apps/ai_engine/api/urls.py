@@ -13,6 +13,7 @@ from .views import (
     StopContinuousMonitorView,
     MonitorStatusView,
     realtime_tracking_sse_view,
+    StopTrackingView,
 )
 
 urlpatterns = [
@@ -35,5 +36,8 @@ urlpatterns = [
     path('model-info/', ModelInfoView.as_view(), name='ai-model-info'),
     path('inference-history/', InferenceHistoryView.as_view(), name='ai-inference-history'),
     path('health/', HealthCheckView.as_view(), name='ai-health'),
+    
+    # Entity-Driven Tracking
+    path('suspects/<global_id>/stop-tracking/', StopTrackingView.as_view(), name='ai-stop-tracking'),
 ]
 

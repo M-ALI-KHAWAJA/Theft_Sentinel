@@ -63,6 +63,7 @@ const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, showFeed = fal
         >
           <CameraFeedWithOverlay
             cameraId={camera.id}
+            cameraName={camera.name}
             height="280px"
             enableOverlay={isMonitoring}
             viewMode="grid"

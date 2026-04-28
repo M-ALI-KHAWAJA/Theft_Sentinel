@@ -3,6 +3,9 @@
 import os
 import sys
 
+# Task 4: Set the Memory Fragmentation Env Variable before PyTorch is imported
+os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+
 
 def main():
     """Run administrative tasks."""

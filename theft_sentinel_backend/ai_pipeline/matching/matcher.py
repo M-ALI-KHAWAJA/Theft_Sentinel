@@ -81,10 +81,7 @@ class CrossCameraMatcher:
 
             meta = self.index_metadata[idx]
 
-            # Temporal constraint: only match if the identity was seen recently
-            time_diff = current_time - meta["timestamp"]
-            if time_diff > self.temporal_window:
-                continue
+            # Temporal constraint REMOVED for permanent memory
 
             # Adaptive thresholding: stricter for same-camera, looser for cross-camera
             threshold = Config.MATCH_THRESHOLD_SAME_CAM if meta["camera_id"] == camera_id else Config.MATCH_THRESHOLD_DIFF_CAM
@@ -134,15 +131,14 @@ class CrossCameraMatcher:
 
         for gid, identity in identities.items():
             for emb_entry in identity.get("embedding_buffer", []):
-                # Only index recent embeddings
-                if current_time - emb_entry["timestamp"] < Config.IDENTITY_EXPIRY_TIME:
-                    vec = emb_entry["embedding"].reshape(1, -1).astype(np.float32)
-                    self.index.add(vec)
-                    self.index_metadata.append({
-                        "global_id": gid,
-                        "camera_id": emb_entry.get("camera_id", -1),
-                        "timestamp": emb_entry["timestamp"],
-                    })
+                # DO NOT DELETE EMBEDDINGS. Permanent memory is required.
+                vec = emb_entry["embedding"].reshape(1, -1).astype(np.float32)
+                self.index.add(vec)
+                self.index_metadata.append({
+                    "global_id": gid,
+                    "camera_id": emb_entry.get("camera_id", -1),
+                    "timestamp": emb_entry["timestamp"],
+                })
 
     def get_index_size(self) -> int:
         """Return the number of vectors in the FAISS index."""

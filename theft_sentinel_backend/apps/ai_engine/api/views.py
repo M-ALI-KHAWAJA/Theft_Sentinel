@@ -812,3 +812,35 @@ def realtime_tracking_sse_view(request, pk):
     response['X-Accel-Buffering'] = 'no'
     return response
 
+
+class StopTrackingView(views.APIView):
+    """
+    POST /api/ai/suspects/<global_id>/stop-tracking/
+
+    Clear the given global_id from the active_thief_global_ids registry,
+    stopping network-wide alerts and bounding boxes.
+    """
+    permission_classes = [IsAuthenticated]
+
+    def post(self, request, global_id):
+        try:
+            global_id_int = int(global_id)
+        except ValueError:
+            return Response(
+                {'error': 'Invalid global_id'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+            
+        from apps.ai_engine.services.ai_service import ai_service
+        
+        if ai_service.is_active_thief(global_id_int):
+            ai_service.remove_active_thief(global_id_int)
+            return Response({
+                'success': True,
+                'message': f'Stopped tracking suspect {global_id_int}'
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({
+                'success': True,
+                'message': f'Suspect {global_id_int} was not actively tracked'
+            }, status=status.HTTP_200_OK)

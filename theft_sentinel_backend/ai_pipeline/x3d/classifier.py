@@ -46,6 +46,7 @@ class ClipBuffer:
         self.buffers: dict[int, deque] = defaultdict(
             lambda: deque(maxlen=max_frames)
         )
+        self.last_seen_time: dict[int, float] = {}
 
     # ── public API ────────────────────────────────────────────────────────────
 
@@ -57,10 +58,13 @@ class ClipBuffer:
             global_id: Cross-camera global identity ID.
             person_crop: BGR image of the person (any size).
         """
-        if person_crop is None or person_crop.size == 0:
+        if person_crop is None or getattr(person_crop, "size", 0) == 0:
             return
         resized = cv2.resize(person_crop, CLIP_SIZE)
         self.buffers[global_id].append(resized)
+        
+        import time
+        self.last_seen_time[global_id] = time.time()
 
     def get_clip(self, global_id: int) -> Optional[torch.Tensor]:
         """
@@ -100,6 +104,28 @@ class ClipBuffer:
     def remove_person(self, global_id: int):
         """Free memory when a global identity expires."""
         self.buffers.pop(global_id, None)
+        self.last_seen_time.pop(global_id, None)
+
+    def cleanup_stale_buffers(self):
+        """
+        Explicitly free RAM for people who walked off-screen (> 2 seconds ago),
+        unless the system is actively encoding a theft clip.
+        """
+        import time
+        import threading
+        
+        # CRITICAL SAFETY GUARD: Do not delete buffers if an alert clip is encoding
+        is_encoding = any(t.name.startswith("clip-upload-") for t in threading.enumerate())
+        if is_encoding:
+            return
+            
+        now = time.time()
+        stale_ids = [gid for gid, last in self.last_seen_time.items() if now - last > 2.0]
+        for gid in stale_ids:
+            if gid in self.buffers:
+                del self.buffers[gid]
+            if gid in self.last_seen_time:
+                del self.last_seen_time[gid]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -159,7 +185,6 @@ class TheftClassifier:
 
     # ── inference ─────────────────────────────────────────────────────────────
 
-    @torch.no_grad()
     def predict(self, clip: torch.Tensor) -> float:
         """
         Run inference on a clip tensor.
@@ -173,7 +198,8 @@ class TheftClassifier:
         if self.model is None:
             return float(np.random.random())   # demo mode
 
-        clip = clip.to(self.device)
-        logits = self.model(clip)              # [1, 2]
-        probs  = torch.softmax(logits, dim=1)
-        return float(probs[0, 1].item())       # class-1 = theft
+        with torch.no_grad():
+            clip = clip.to(self.device)
+            logits = self.model(clip)              # [1, 2]
+            probs  = torch.softmax(logits, dim=1)
+            return float(probs[0, 1].item())       # class-1 = theft

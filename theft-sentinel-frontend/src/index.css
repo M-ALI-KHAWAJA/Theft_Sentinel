@@ -143,6 +143,15 @@ body {
   border: 1px solid rgba(255, 255, 255, 0.1);
 }
 
+/* Hide scrollbar but keep scroll functionality */
+.no-scrollbar::-webkit-scrollbar {
+  display: none;
+}
+.no-scrollbar {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
 .glass-strong {
   background: rgba(17, 24, 39, 0.8);
   backdrop-filter: blur(20px);

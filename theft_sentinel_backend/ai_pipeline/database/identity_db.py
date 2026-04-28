@@ -106,7 +106,7 @@ class IdentityRecord:
 
     def is_expired(self) -> bool:
         """Check if this identity has expired (not seen for too long)."""
-        return (time.time() - self.last_seen) > Config.IDENTITY_EXPIRY_TIME
+        return False
 
     def to_dict(self) -> dict:
         """Serialize to dict for output/logging."""
@@ -221,10 +221,7 @@ class GlobalIdentityDatabase:
                 if gid == exclude_global_id:
                     continue
 
-                # Temporal constraint
-                time_since_last = current_time - record.last_seen
-                if time_since_last > Config.MATCH_TEMPORAL_WINDOW:
-                    continue
+                # Temporal constraint REMOVED for permanent memory
 
                 # Use best-match-in-buffer strategy (most robust)
                 score = record.get_best_match_score(embedding)
@@ -265,25 +262,8 @@ class GlobalIdentityDatabase:
         Returns:
             Number of identities removed.
         """
-        with self._lock:
-            expired_ids = [
-                gid for gid, record in self._identities.items()
-                if record.is_expired()
-            ]
-
-            for gid in expired_ids:
-                del self._identities[gid]
-                # Clean up track mapping
-                keys_to_remove = [
-                    k for k, v in self._track_to_global.items() if v == gid
-                ]
-                for k in keys_to_remove:
-                    del self._track_to_global[k]
-
-            if expired_ids:
-                print(f"[IdentityDB] Pruned {len(expired_ids)} expired identities")
-
-            return len(expired_ids)
+        # DO NOT PURGE IDENTITIES. Permanent memory is required.
+        return 0
 
     def get_stats(self) -> dict:
         """Return database statistics."""

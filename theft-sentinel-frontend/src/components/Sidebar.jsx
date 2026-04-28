@@ -57,7 +57,7 @@ const Sidebar = () => {
     ADMIN: [
       { name: 'Dashboard', path: '/dashboard', icon: HomeIcon },
       { name: 'Historical Reporting', path: '/dashboard/historical-reporting', icon: ChartBarIcon },
-      { name: 'Control Room', path: '/cameras', icon: VideoCameraIcon },
+      { name: 'Control Room', path: '/cameras/control-room', icon: VideoCameraIcon },
       { name: 'Alerts', path: '/alerts', icon: BellAlertIcon },
       { name: 'Incidents', path: '/incidents', icon: ExclamationTriangleIcon },
       { name: 'Tracking', path: '/tracking', icon: MapIcon },
@@ -72,7 +72,7 @@ const Sidebar = () => {
       { name: 'Alerts', path: '/alerts', icon: BellAlertIcon },
       { name: 'Incidents', path: '/incidents', icon: ExclamationTriangleIcon },
       { name: 'Tracking', path: '/tracking', icon: MapIcon },
-      { name: 'Control Room', path: '/cameras', icon: VideoCameraIcon },
+      { name: 'Control Room', path: '/cameras/control-room', icon: VideoCameraIcon },
       { name: 'AI Dashboard', path: '/ai/dashboard', icon: CpuChipIcon },
       { name: 'AI History', path: '/ai/history', icon: CpuChipIcon },
     ],

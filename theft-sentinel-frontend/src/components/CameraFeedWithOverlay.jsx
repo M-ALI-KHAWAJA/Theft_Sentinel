@@ -34,6 +34,7 @@ const LERP_FACTOR = 0.2;
 
 const CameraFeedWithOverlay = memo(({
   cameraId,
+  cameraName,
   width         = '100%',
   height        = 'auto',
   className     = '',
@@ -59,6 +60,7 @@ const CameraFeedWithOverlay = memo(({
   });
 
   // ── Map-based Suspect LERP State ───────────────────────────────────────────
+  const knownThievesRef = useRef(new Set());
   const latchedSuspectsRef = useRef(new Map());
   const visualBoxRef = useRef({});
   const targetBoxRef = useRef({}); 
@@ -87,75 +89,91 @@ const CameraFeedWithOverlay = memo(({
     const tracks = trackingData.tracks || [];
 
     for (const track of tracks) {
-      const trackId = track.global_id || track.track_id;
+      // DEBUG: Print the raw track object to the F12 Developer Console
+      console.log("🕵️ RAW TRACK RECEIVED:", JSON.stringify(track));
 
-      const isSuspicious = 
-        track.is_suspicious === true ||
-        frameMetaRef.current.suspicious_ids.has(track.global_id) ||
-        frameMetaRef.current.suspicious_ids.has(track.track_id) ||
-        (track.x3d_score ?? 0) >= SUSPICIOUS_THRESHOLD ||
-        trackingData.alert_triggered;
+      const rawId = track.global_id != null ? track.global_id : track.track_id;
+      const id = String(rawId);
 
-      // Lock-On
-      if (isSuspicious) {
-        latchedSuspectsRef.current.set(trackId, now);
-      } 
-      // Keep Alive
-      else if (latchedSuspectsRef.current.has(trackId)) {
-        latchedSuspectsRef.current.set(trackId, now);
-      }
+      // Safely check every possible spelling/nesting of the suspicious flag
+      const flagSnake = track.is_suspicious;
+      const flagCamel = track.isSuspicious;
 
-      // Update target for LERP if they are latched
-      if (latchedSuspectsRef.current.has(trackId)) {
-        const [x1, y1, x2, y2] = track.bbox;
-        const x = x1;
-        const y = y1;
-        const w = x2 - x1;
-        const h = y2 - y1;
-        
-        const effectiveAlert = trackingData.alert_triggered;
-        const color = effectiveAlert ? '#FF1111' : '#FF8800';
-        const gid = track.global_id ?? '?';
-        const label = `SUSPECT G:${gid}`;
-        const score = `${((track.x3d_score ?? 0) * 100).toFixed(0)}%`;
+      // Fallback: If the global alarm is ringing, assume the person with the high score is the thief
+      const isHighScoringTarget = trackingData.alert_triggered && (track.x3d_score >= 0.70);
 
-        targetBoxRef.current[trackId] = {
-          x, y, w, h,
-          lastUpdated: now,
-          label,
-          score,
-          color
-        };
+      const isBackendSuspicious = 
+          flagSnake === true || String(flagSnake).toLowerCase() === 'true' || flagSnake === 1 ||
+          flagCamel === true || String(flagCamel).toLowerCase() === 'true' || flagCamel === 1 ||
+          isHighScoringTarget;
 
-        if (!visualBoxRef.current[trackId]) {
-          visualBoxRef.current[trackId] = { x, y, w, h, label, score, color };
-        }
+      // 1. Check if they are ALREADY a known thief in permanent memory
+      const isKnownThief = knownThievesRef.current.has(id);
+
+      // 3. Process new or returning thieves
+      if (isBackendSuspicious || isKnownThief) {
+
+          // If this is a BRAND NEW thief detection
+          if (isBackendSuspicious && !isKnownThief) {
+              knownThievesRef.current.add(id); // Permanently memorize them
+
+              if (track.global_id != null && cameraName) {
+                  console.log(`🚨 [FRONTEND] NEW THIEF LATCHED: Global ID ${track.global_id}`);
+                  window.dispatchEvent(new CustomEvent('ai-suspect-detected', {
+                      detail: { globalId: track.global_id, cameraName }
+                  }));
+              }
+          } else if (isKnownThief) {
+              // Diagnostic log to prove the frontend recognizes a returning threat
+              console.log(`👀 [FRONTEND] RETURNING THIEF RECOGNIZED: ID ${id}`);
+          }
+
+          // Latch them for the drawing loop
+          latchedSuspectsRef.current.set(id, now);
+
+          const gid = track.global_id ?? '?';
+          targetBoxRef.current[id] = {
+              bbox: track.bbox, 
+              label: `THIEF G:${gid}`,
+              score: `${((track.x3d_score ?? 0) * 100).toFixed(0)}%`,
+              color: '#FF1111' 
+          };
+
+          if (!visualBoxRef.current[id]) {
+              visualBoxRef.current[id] = [...track.bbox];
+          }
       }
     }
 
-    // Sync React state for button visibility without causing rapid renders
-    if (latchedSuspectsRef.current.size > 0 && !isTrackingActive) {
-      setIsTrackingActive(true);
-    } else if (latchedSuspectsRef.current.size === 0 && isTrackingActive) {
-      setIsTrackingActive(false);
-    }
-
+    // Sync React state for alert badge
     setCurrentFrameAlert(Boolean(trackingData.alert_triggered));
 
-  }, [trackingData, isTrackingActive]);
+  }, [trackingData, cameraName]);
 
-  // ── Stop Tracking handler ──────────────────────────────────────────────────
-  const handleStopTracking = useCallback(() => {
-    latchedSuspectsRef.current.clear();
-    targetBoxRef.current = {};
-    visualBoxRef.current = {};
-    const canvas = canvasRef.current;
-    if (canvas) {
-      const ctx = canvas.getContext('2d');
-      ctx.clearRect(0, 0, canvas.width, canvas.height);
-    }
-    setIsTrackingActive(false);
+  // ── Sync with global Stop Tracking event ───────────────────────────────────
+  useEffect(() => {
+    const handleSuspectCleared = (e) => {
+      const globalId = String(e.detail.globalId);
+      // 1. Remove from permanent thief memory
+      knownThievesRef.current.delete(globalId);
+      // 2. Unconditionally clear all ref entries keyed by globalId
+      latchedSuspectsRef.current.delete(globalId);
+      delete targetBoxRef.current[globalId];
+      delete visualBoxRef.current[globalId];
+      // 3. Fallback scan: clear any track-ID-keyed entry whose label matches this globalId
+      for (const [key, target] of Object.entries(targetBoxRef.current)) {
+        if (target.label === `THIEF G:${globalId}`) {
+          latchedSuspectsRef.current.delete(key);
+          delete targetBoxRef.current[key];
+          delete visualBoxRef.current[key];
+        }
+      }
+    };
+    window.addEventListener('ai-suspect-cleared', handleSuspectCleared);
+    return () => window.removeEventListener('ai-suspect-cleared', handleSuspectCleared);
   }, []);
+
+
 
   // ── Canvas drawing loop (requestAnimationFrame) ────────────────────────────
   const drawLoop = useCallback(() => {
@@ -182,91 +200,103 @@ const CameraFeedWithOverlay = memo(({
 
     const now = performance.now();
 
-    for (const [trackId, timestamp] of latchedSuspectsRef.current.entries()) {
+    const drawList = [];
+
+    for (const [keyId, timestamp] of latchedSuspectsRef.current.entries()) {
+      const trackId = String(keyId);
       const target = targetBoxRef.current[trackId];
       const visual = visualBoxRef.current[trackId];
 
       if (target && visual) {
-        if (now - timestamp < 1500) {
-          // Calculate LERP, protected against NaN
-          const tX = Number.isFinite(target.x) ? target.x : visual.x;
-          const tY = Number.isFinite(target.y) ? target.y : visual.y;
-          const tW = Number.isFinite(target.w) ? target.w : visual.w;
-          const tH = Number.isFinite(target.h) ? target.h : visual.h;
-
-          visual.x += (tX - visual.x) * LERP_FACTOR;
-          visual.y += (tY - visual.y) * LERP_FACTOR;
-          visual.w += (tW - visual.w) * LERP_FACTOR;
-          visual.h += (tH - visual.h) * LERP_FACTOR;
-
-          if (Number.isNaN(visual.x)) visual.x = tX || 0;
-          if (Number.isNaN(visual.y)) visual.y = tY || 0;
-          if (Number.isNaN(visual.w)) visual.w = tW || 0;
-          if (Number.isNaN(visual.h)) visual.h = tH || 0;
-
-          if (visual.w > 0 && visual.h > 0) {
-            const meta     = frameMetaRef.current;
-            const nativeW  = meta.frame_width || 640;
-            const nativeH  = meta.frame_height || 480;
-            const displayW = canvas.clientWidth  || bufW;
-            const displayH = canvas.clientHeight || bufH;
-            const scaleX   = displayW / nativeW;
-            const scaleY   = displayH / nativeH;
-
-            const drawX = visual.x * scaleX;
-            const drawY = visual.y * scaleY;
-            const drawW = visual.w * scaleX;
-            const drawH = visual.h * scaleY;
-
-            ctx.save();
-            ctx.strokeStyle = target.color || '#FF8800';
-            ctx.lineWidth   = 2.5;
-            ctx.shadowColor = target.color || '#FF8800';
-            ctx.shadowBlur  = 6;
-            ctx.strokeRect(drawX, drawY, drawW, drawH);
-            ctx.restore();
-
-            const label = target.label || 'SUSPECT';
-            ctx.font = 'bold 12px "Courier New", monospace';
-            const textW = ctx.measureText(label).width;
-
-            const badgeColor = target.color === '#FF1111' ? 'rgba(220,0,0,0.85)' : 'rgba(200,100,0,0.85)';
-            
-            ctx.fillStyle = badgeColor;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-              ctx.roundRect(drawX, drawY - 22, textW + 10, 22, [3, 3, 0, 0]);
-            } else {
-              ctx.rect(drawX, drawY - 22, textW + 10, 22);
-            }
-            ctx.fill();
-
-            ctx.fillStyle = '#FFFFFF';
-            ctx.fillText(label, drawX + 5, drawY - 6);
-
-            const score = target.score || '0%';
-            const scoreW = ctx.measureText(score).width;
-
-            ctx.fillStyle = badgeColor;
-            ctx.beginPath();
-            if (ctx.roundRect) {
-              ctx.roundRect(drawX, drawY + drawH, scoreW + 10, 18, [0, 0, 3, 3]);
-            } else {
-              ctx.rect(drawX, drawY + drawH, scoreW + 10, 18);
-            }
-            ctx.fill();
-
-            ctx.fillStyle = '#FFFFFF';
-            ctx.font      = '11px "Courier New", monospace';
-            ctx.fillText(score, drawX + 5, drawY + drawH + 13);
-          }
-        } else {
-          // Off-Screen Cleanup: Person left the frame. Stop drawing them entirely.
+        if (now - timestamp > 3500) {
+          // Off-Screen Cleanup: Person left the frame and TTL expired
           latchedSuspectsRef.current.delete(trackId);
           delete targetBoxRef.current[trackId];
           delete visualBoxRef.current[trackId];
+          continue;
+        }
+
+        // Strict guard against NaN poisoning
+        if (target && target.bbox && target.bbox.length === 4 && !target.bbox.some(isNaN)) {
+          // Safe to calculate LERP
+          visual[0] += (target.bbox[0] - visual[0]) * 0.2;
+          visual[1] += (target.bbox[1] - visual[1]) * 0.2;
+          visual[2] += (target.bbox[2] - visual[2]) * 0.2;
+          visual[3] += (target.bbox[3] - visual[3]) * 0.2;
+        }
+
+        // Guard the actual drawing step
+        if (visual && visual.length === 4 && !visual.some(isNaN)) {
+          const x = visual[0];
+          const y = visual[1];
+          const w = visual[2]; // Directly use width
+          const h = visual[3]; // Directly use height
+
+          if (w > 0 && h > 0) {
+            drawList.push({ target, x, y, w, h });
+          }
+        } else {
+          // If poisoned, forcefully reset it from the target next frame
+          delete visualBoxRef.current[trackId];
         }
       }
+    }
+
+    for (const { target, x, y, w, h } of drawList) {
+      const meta     = frameMetaRef.current;
+      const nativeW  = meta.frame_width || 640;
+      const nativeH  = meta.frame_height || 480;
+      const displayW = canvas.clientWidth  || bufW;
+      const displayH = canvas.clientHeight || bufH;
+      const scaleX   = displayW / nativeW;
+      const scaleY   = displayH / nativeH;
+
+      const drawX = x * scaleX;
+      const drawY = y * scaleY;
+      const drawW = w * scaleX;
+      const drawH = h * scaleY;
+
+      ctx.save();
+      ctx.strokeStyle = target.color || '#FF8800';
+      ctx.lineWidth   = 2.5;
+      ctx.shadowColor = target.color || '#FF8800';
+      ctx.shadowBlur  = 6;
+      ctx.strokeRect(drawX, drawY, drawW, drawH);
+      ctx.restore();
+
+      const label = target.label || 'SUSPECT';
+      ctx.font = 'bold 12px "Courier New", monospace';
+      const textW = ctx.measureText(label).width;
+
+      const badgeColor = target.color === '#FF1111' ? 'rgba(220,0,0,0.85)' : 'rgba(200,100,0,0.85)';
+      
+      ctx.fillStyle = badgeColor;
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(drawX, drawY - 22, textW + 10, 22, [3, 3, 0, 0]);
+      } else {
+        ctx.rect(drawX, drawY - 22, textW + 10, 22);
+      }
+      ctx.fill();
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.fillText(label, drawX + 5, drawY - 6);
+
+      const score = target.score || '0%';
+      const scoreW = ctx.measureText(score).width;
+
+      ctx.fillStyle = badgeColor;
+      ctx.beginPath();
+      if (ctx.roundRect) {
+        ctx.roundRect(drawX, drawY + drawH, scoreW + 10, 18, [0, 0, 3, 3]);
+      } else {
+        ctx.rect(drawX, drawY + drawH, scoreW + 10, 18);
+      }
+      ctx.fill();
+
+      ctx.fillStyle = '#FFFFFF';
+      ctx.font      = '11px "Courier New", monospace';
+      ctx.fillText(score, drawX + 5, drawY + drawH + 13);
     }
 
     // Task 3: Ensure requestAnimationFrame schedules itself regardless of drawing
@@ -282,20 +312,7 @@ const CameraFeedWithOverlay = memo(({
     };
   }, [drawLoop, enableOverlay]);
 
-  // ── Stop Tracking / Paused notice ──────────────────────────────────────────
-  const stopTrackingButton = enableOverlay && isTrackingActive && (
-    <button
-      onClick={(e) => { e.stopPropagation(); handleStopTracking(); }}
-      className="flex items-center gap-2 bg-red-700 hover:bg-red-800
-                 active:scale-95 text-white font-bold text-sm
-                 py-2 px-5 rounded-full shadow-xl transition-all"
-    >
-      <svg className="w-4 h-4" viewBox="0 0 24 24" fill="currentColor">
-        <rect x="6" y="6" width="12" height="12" rx="1" />
-      </svg>
-      Stop Tracking
-    </button>
-  );
+
 
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
@@ -386,32 +403,7 @@ const CameraFeedWithOverlay = memo(({
           </div>
         )}
 
-        {/* FULL mode: Stop Tracking */}
-        {!isGridMode && (
-          <>
-            {stopTrackingButton && (
-              <div
-                style={{
-                  position:  'absolute',
-                  bottom:    48,
-                  left:      '50%',
-                  transform: 'translateX(-50%)',
-                  zIndex:    20,
-                }}
-              >
-                {stopTrackingButton}
-              </div>
-            )}
-          </>
-        )}
       </div>
-
-      {/* GRID mode: Stop Tracking */}
-      {isGridMode && stopTrackingButton && (
-        <div className="flex justify-center items-center py-2 px-3">
-          {stopTrackingButton}
-        </div>
-      )}
     </>
   );
 });
@@ -420,6 +412,7 @@ CameraFeedWithOverlay.displayName = 'CameraFeedWithOverlay';
 
 CameraFeedWithOverlay.propTypes = {
   cameraId:      PropTypes.oneOfType([PropTypes.string, PropTypes.number]).isRequired,
+  cameraName:    PropTypes.string,
   width:         PropTypes.string,
   height:        PropTypes.string,
   className:     PropTypes.string,

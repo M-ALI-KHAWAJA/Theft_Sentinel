@@ -124,9 +124,9 @@ class ContinuousMonitor:
         
         while self.is_running:
             try:
-                ret, frame = self.cap.read()
+                ret, raw_frame = self.cap.read()
                 
-                if not ret or frame is None:
+                if not ret or raw_frame is None or getattr(raw_frame, "size", 0) == 0:
                     logger.warning(f"Failed to read frame from camera {self.camera_id}")
                     self.error_count += 1
                     
@@ -141,6 +141,13 @@ class ContinuousMonitor:
                     time.sleep(0.1)
                     continue
                 
+                # Downscale instantly. 640x480 is plenty for X3D inference and Cloudinary clips.
+                # This reduces memory from 6.2MB per frame to 0.9MB.
+                frame = cv2.resize(raw_frame, (640, 480))
+                
+                # Explicitly delete the raw 1080p array to free memory
+                del raw_frame 
+
                 # Reset error count on success
                 self.error_count = 0
                 self.frames_captured += 1
@@ -161,6 +168,8 @@ class ContinuousMonitor:
         self.start_time = time.time()
         runner = InferenceRunner()
         
+        import gc
+        
         # Wait for the first frame from the capture thread
         while self.is_running and self.latest_frame is None:
             time.sleep(0.1)
@@ -169,14 +178,24 @@ class ContinuousMonitor:
         while self.is_running:
             try:
                 frame = self.latest_frame
-                if frame is None:
+                if frame is None or getattr(frame, "size", 0) == 0:
                     time.sleep(0.1)
                     continue
                 
                 self.frames_processed += 1
                 
+                if self.frames_processed % 50 == 0:
+                    gc.collect()
+                
                 # Run AI inference
                 result = runner.run_inference(frame, camera_id=self.camera_id)
+                
+                # Task 3: Aggressive CUDA Cache Flushing (balanced for FPS)
+                if self.frames_processed % 15 == 0 or result.get('classification') == 'theft':
+                    import torch
+                    if torch.cuda.is_available():
+                        torch.cuda.empty_cache()
+                        
                 result['timestamp'] = timezone.now().isoformat()
                 result['fps'] = self.get_stats()['fps']
                 # Attach native frame dimensions so the frontend can scale bboxes
@@ -193,18 +212,15 @@ class ContinuousMonitor:
                     # Proceed: Save DB Alert, Trigger VideoWriter, set is_suspicious=True
                 else:
                     # COOLDOWN ACTIVE (or normal frame)
-                    # Force normal state for the JSON payload
+                    # Force normal state for the JSON payload so no alert is created
                     is_theft_detected = False
                     result['classification'] = 'normal'
                     if 'alert_triggered' in result:
                         result['alert_triggered'] = False
-                    if 'suspicious_tracks' in result:
-                        result['suspicious_tracks'] = []
-                    # Ensure tracks don't have is_suspicious=True during cooldown
-                    if 'tracks' in result:
-                        for track in result['tracks']:
-                            if 'is_suspicious' in track:
-                                track['is_suspicious'] = False
+                    
+                    # We NO LONGER clear `suspicious_tracks` or `is_suspicious` here,
+                    # so the frontend Node Graph and camera overlays still receive them
+                    # and draw the bounding boxes consistently via Cross-Camera Broadcast.
 
                 self.last_result = result
 
@@ -340,11 +356,14 @@ class ContinuousMonitor:
 
         alert_id = str(alert.id)
 
-        def _upload_worker():
+        def _upload_worker(alert_id, frames):
             from .clip_encoding import write_frames_to_mp4
             from apps.alerts.cloudinary_video import upload_video_to_cloudinary
             import django
             django.setup.__module__  # ensure ORM is ready in this thread
+
+            if not frames:
+                return
 
             stats = self.get_stats()
             # Use capture_fps for encoding to ensure real-time playback speed
@@ -361,11 +380,19 @@ class ContinuousMonitor:
             tmp_path = tmp.name
             tmp.close()
             try:
+                import gc
+                gc.collect()  # Flush RAM before OpenCV VideoWriter starts allocating
+
                 logger.info("🎬 Encoding %d-frame clip (%.1f s) for alert %s",
                             len(clip_frames), len(clip_frames) / fps, alert_id)
                 if not write_frames_to_mp4(clip_frames, tmp_path, fps=fps):
                     logger.error("Clip encoding failed for alert %s", alert_id)
                     return
+
+                # Task 2: Explicitly release the duplicated list references and flush RAM
+                del clip_frames
+                del frames
+                gc.collect()  # Flush RAM after OpenCV VideoWriter explicitly releases
 
                 logger.info("☁️  Uploading clip to Cloudinary for alert %s …", alert_id)
                 video_url, public_id = upload_video_to_cloudinary(tmp_path)
@@ -392,7 +419,7 @@ class ContinuousMonitor:
                 except OSError:
                     pass
 
-        t = threading.Thread(target=_upload_worker, daemon=True,
+        t = threading.Thread(target=_upload_worker, args=(alert_id, frames), daemon=True,
                              name=f"clip-upload-{alert_id}")
         t.start()
 
