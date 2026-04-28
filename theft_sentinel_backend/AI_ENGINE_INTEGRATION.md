@@ -1,585 +1,520 @@
-# AI Engine Integration Documentation
-
-## 🎯 Overview
-
-The AI Engine is fully integrated into the Django REST Framework backend. It runs the YOLOv8 + DeepSORT + ML classifier pipeline either **on-demand** (single frame analysis) or **continuously** (live camera stream monitoring with automatic theft-alert video clip generation and Cloudinary upload).
-
-The integration is **fully isolated**, **non-destructive**, and **production-ready**.
+# Theft Sentinel — AI Engine Integration Guide
+> **Architecture Snapshot — Stable Milestone.**
+> This document describes the exact pipeline, optimizations, and architectural
+> decisions that are active in the current production codebase.
 
 ---
 
-## 📁 Project Structure
+## 1. Overview
+
+The AI Engine is a self-contained Django application (`apps/ai_engine/`) that
+runs a multi-stage computer vision pipeline on live RTSP camera streams. It
+detects theft behavior in real time and streams annotated tracking data to
+the frontend via Server-Sent Events (SSE).
+
+The pipeline is **decoupled from the Django request cycle**. It runs in
+background daemon threads managed by a singleton `MonitorManager`.
+
+---
+
+## 2. Complete AI Pipeline Flow
 
 ```
-theft_sentinel_backend/
-├── apps/
-│   ├── ai_engine/                    # Isolated AI module
-│   │   ├── api/
-│   │   │   ├── __init__.py
-│   │   │   ├── serializers.py       # API request/response serializers
-│   │   │   ├── views.py             # All API endpoint handlers (9 views)
-│   │   │   └── urls.py              # 9 API routes
-│   │   ├── services/
-│   │   │   ├── __init__.py
-│   │   │   ├── ai_service.py        # AI model lifecycle manager (lazy loader)
-│   │   │   ├── clip_encoding.py     # NEW — H.264 MP4 frame → file encoder
-│   │   │   ├── continuous_monitor.py # NEW — live stream monitor + clip upload
-│   │   │   └── inference_runner.py  # Wraps YOLOv8/DeepSORT/ML pipeline
-│   │   ├── utils/
-│   │   │   ├── __init__.py
-│   │   │   └── frame_utils.py       # Base64 decode / RTSP capture / validate
-│   │   ├── migrations/
-│   │   │   ├── __init__.py
-│   │   │   └── 0001_initial.py
-│   │   ├── __init__.py
-│   │   ├── admin.py
-│   │   ├── apps.py
-│   │   ├── models.py                # AIInference, DetectionTrack
-│   │   ├── tests.py
-│   │   └── README.md
-│   ├── alerts/
-│   │   ├── cloudinary_video.py      # NEW — Cloudinary upload/delete helpers
-│   │   ├── models.py                # Alert + video_url / video_public_id fields
-│   │   ├── serializers.py
-│   │   ├── signals.py
-│   │   ├── urls.py
-│   │   └── views.py
-│   ├── accounts/                    # JWT auth + RBAC (unchanged)
-│   ├── cameras/                     # Camera model + RTSP URLs (unchanged)
-│   ├── incidents/                   # Incident model (unchanged)
-│   ├── tracking/                    # Tracking ingest API (unchanged)
-│   ├── dashboard/
-│   ├── feedback/
-│   ├── mobile/
-│   ├── personnel/
-│   └── surveillance/
-├── ModelExport/                      # AI pipeline (UNTOUCHED)
-│   ├── ml_classifier/
-│   │   ├── feature_builder.py
-│   │   ├── sequence_collector.py
-│   │   └── theft_classifier.py
-│   ├── trained_models/
-│   │   └── theft_classifier.pkl
-│   ├── YOLOv8l_YOLOv8l_Pose_DeepSort_MLclassifier.py
-│   ├── yolov8l-pose.pt
-│   └── yolov8l.pt
-├── config/
-│   └── urls.py                      # All app routes registered
-├── .env                             # Environment variables (see section below)
+RTSP Camera Stream
+       │
+       ▼
+┌──────────────────────────────────────────────────────────────┐
+│  _capture_loop  (Thread 1 — dedicated capture)               │
+│                                                              │
+│  cv2.VideoCapture → raw_frame (1080p or native resolution)   │
+│  cv2.resize(raw_frame, (640, 480))  ← IMMEDIATE DOWNSCALE    │
+│  del raw_frame                      ← FREE native array      │
+│  self.latest_frame = frame          ← rolling frame buffer   │
+└──────────────────────────────────────────────────────────────┘
+       │
+       ▼
+┌──────────────────────────────────────────────────────────────┐
+│  _monitor_loop  (Thread 2 — AI inference)                    │
+│                                                              │
+│  frame = self.latest_frame   ← read shared pointer          │
+│                                                              │
+│  Step 1 — YOLOv8  (GPU, inference_lock)                     │
+│    Detect all persons in the 640×480 frame                   │
+│    Output: raw_dets  [{bbox, confidence, class_id}]          │
+│                                                              │
+│  Step 2 — DeepSORT  (CPU, per-instance tracker)             │
+│    Associate detections across frames → track_id             │
+│    Output: tracks  [{track_id, bbox}]                        │
+│                                                              │
+│  Step 3 — OSNet (GPU, inference_lock) + FAISS (state_lock)  │
+│    Extract 512-d Re-ID embedding for each person crop        │
+│    Query FAISS index + DB for nearest neighbor match         │
+│    Assign or register cross-camera global_id                 │
+│    Update FAISS index with new/updated embedding             │
+│                                                              │
+│  Step 4 — X3D (GPU, inference_lock)                         │
+│    Runs every Config.X3D_INFERENCE_EVERY frames per global_id│
+│    Needs ≥ X3D_CLIP_FRAMES frames in ClipBuffer              │
+│    Output: theft_score  float 0–1                            │
+│      ≥ 0.80 → classification="theft" → alert eligible       │
+│      ≥ 0.50 → suspicious (flag only, no alert)              │
+│                                                              │
+│  Step 5 — Build result dict (see SSE payload schema)        │
+│    is_suspicious = True if score ≥ 0.50 OR in registry      │
+│                                                              │
+│  Step 6 — SSE Callback  (throttled to 10 FPS)              │
+│    sse_registry.publish(camera_id, result)                   │
+│    → All subscribed EventSource clients receive the event    │
+│                                                              │
+│  Step 7 — DB Write  (every ~2 s or immediately on theft)    │
+│    AIInference.objects.create(...)                           │
+│    If theft: Alert.objects.create(...) + clip upload         │
+└──────────────────────────────────────────────────────────────┘
+       │
+       ▼
+SSE Stream → CameraFeedWithOverlay.jsx (canvas bounding boxes)
+           → LiveTrackingNodeGraph.jsx (suspect node graph)
 ```
 
----
+### Threshold Summary
 
-## 🚀 API Endpoints
-
-All endpoints are prefixed with `/api/ai/`.
-
-| Method | Endpoint | Auth | Description |
-|--------|----------|------|-------------|
-| `POST` | `/analyze-frame/` | ✅ JWT | Analyze single base64-encoded frame |
-| `POST` | `/process-camera/` | ✅ JWT | Capture frame from camera RTSP stream and analyze |
-| `POST` | `/full-pipeline/` | ✅ JWT | Combined endpoint — accepts `frame` OR `camera_id` |
-| `POST` | `/monitor/start/` | ✅ JWT | Start continuous monitoring on a live camera stream |
-| `POST` | `/monitor/stop/` | ✅ JWT | Stop continuous monitoring |
-| `GET`  | `/monitor/status/` | ✅ JWT | Get status of all running monitors (or single) |
-| `GET`  | `/model-info/` | ✅ JWT | Get AI model metadata and device info |
-| `GET`  | `/inference-history/` | ✅ JWT | Paginated inference logs with filters |
-| `GET`  | `/health/` | 🌐 Public | Health check — no auth required |
+| Score Range | `classification` | `alert_triggered` | `is_suspicious` |
+|-------------|-----------------|-------------------|-----------------|
+| `< 0.50` | `"normal"` | `false` | `false` |
+| `≥ 0.50, < 0.80` | `"normal"` | `false` | `true` |
+| `≥ 0.80` | `"theft"` | `true` | `true` |
 
 ---
 
-### 1. Analyze Frame
+## 3. Module Responsibilities
 
-**POST** `/api/ai/analyze-frame/`
+### `continuous_monitor.py` — Capture Loop & Video Saving
 
-```json
-{
-  "frame": "base64_encoded_image_data",
-  "camera_id": "optional_camera_objectid",
-  "save_to_db": true,
-  "create_alert_on_theft": true
-}
+**`ContinuousMonitor`** (per camera instance)
+
+- **`_capture_loop` (Thread 1):** Opens the RTSP stream with
+  `cv2.VideoCapture`, reads raw frames at full camera FPS (15–30 FPS), and
+  immediately downscales to 640×480 before storing them in a rolling
+  `deque(maxlen=150)` frame buffer (≈ 5 seconds of footage at 30 FPS).
+
+- **`_monitor_loop` (Thread 2):** Reads `self.latest_frame` from the shared
+  pointer and calls `runner.run_inference()`. After inference, the result is
+  immediately published to SSE clients (callback fires first, before any DB
+  write), then saved to the database every ~2 seconds or immediately on theft.
+
+- **Clip encoding / upload:** On every theft classification, the rolling
+  frame buffer is snapshot (thread-safe copy), clipped to ≈ 5 seconds, encoded
+  to MP4 with OpenCV VideoWriter, uploaded to Cloudinary, and the resulting
+  URL is saved on the `Alert` document — all in a separate daemon thread
+  (`clip-upload-<alert_id>`).
+
+- **`MonitorManager`** is a process-level singleton. It owns all per-camera
+  `ContinuousMonitor` instances and wires the `SSERegistry` as the primary
+  callback automatically.
+
+---
+
+### `inference_runner.py` — AI Orchestration
+
+**`InferenceRunner`** (per-camera, per-thread, stateful)
+
+Each instance owns an isolated `MultiObjectTracker` (DeepSORT) and embedding
+smoothing buffers. No state is shared between camera threads, preventing
+cross-contamination.
+
+All GPU forward passes use `ai_service.inference_lock` (mutual exclusion).
+All shared FAISS/identity state uses `ai_service.state_lock`.
+
+Key method: `run_inference(frame_bgr, camera_id) → dict`
+(also aliased as `process_frame` for backward compatibility with on-demand views).
+
+---
+
+## 4. Critical Architecture Decisions & Gotchas
+
+### 4.1 Hardware RAM — Immediate 640×480 Downscale
+
+**Problem:** Full-resolution 1080p frames (≈ 6.2 MB each) accumulated in the
+rolling frame buffer (150 frames) consumed ≈ 930 MB of RAM, causing
+`cv::OutOfMemoryError` crashes in OpenCV when the VideoWriter tried to
+allocate additional space for clip encoding.
+
+**Fix (in `_capture_loop`):**
+```python
+frame = cv2.resize(raw_frame, (640, 480))  # 0.9 MB per frame
+del raw_frame                              # free the native 1080p array immediately
 ```
 
-**Response:**
-```json
-{
-  "classification": "theft",
-  "confidence": 0.87,
-  "persons": 2,
-  "objects": 5,
-  "tracks": 2,
-  "processing_time_ms": 145.2,
-  "camera_name": "Entrance Cam",
-  "camera_location": "Front Gate",
-  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
-  "alert_created": true,
-  "alert_id": "65f3a2b1c8d4e5f6a7b8c9d1",
-  "inference_id": "65f3a2b1c8d4e5f6a7b8c9d2",
-  "detections": [...],
-  "poses": [...],
-  "tracks_data": [...],
-  "suspicious_tracks": [...],
-  "frame_metadata": {...}
-}
+A 640×480 frame is ≈ 0.9 MB. The full 150-frame buffer now uses only ≈ 135 MB,
+keeping peak RAM well within safe limits. This resolution is also sufficient for
+X3D inference and for producing acceptable quality alert clips.
+
+---
+
+### 4.2 RAM — `gc.collect()` Before and After Clip Encoding
+
+**Problem:** Even after frame downscaling, the clip encoding process
+(`write_frames_to_mp4` + `upload_video_to_cloudinary`) temporarily held
+references to the frame list, preventing garbage collection and causing
+further memory spikes at upload time.
+
+**Fix (in `_upload_worker`):**
+```python
+import gc
+gc.collect()                    # Flush RAM before VideoWriter allocation
+write_frames_to_mp4(clip_frames, tmp_path, fps=fps)
+del clip_frames                 # Release list immediately after encoding
+del frames                      # Release the snapshot copy
+gc.collect()                    # Flush RAM after VideoWriter releases
 ```
 
----
-
-### 2. Process Camera
-
-**POST** `/api/ai/process-camera/`
-
-Captures one frame from the camera's RTSP URL, then runs the full pipeline.
-
-```json
-{
-  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
-  "save_to_db": true,
-  "create_alert_on_theft": true
-}
-```
-
-**Response:** Same structure as `analyze-frame`.
+The inference loop itself also calls `gc.collect()` every 50 frames as a
+periodic housekeeping measure.
 
 ---
 
-### 3. Full Pipeline
+### 4.3 VRAM — Aggressive `torch.cuda.empty_cache()` Scheduling
 
-**POST** `/api/ai/full-pipeline/`
+**Problem:** PyTorch reserves freed VRAM in its memory pool and does not return
+it to the CUDA allocator, causing fragmentation. On a 6 GB GPU running YOLO +
+OSNet + X3D simultaneously, this caused `CUDA out of memory` errors.
 
-Convenience endpoint — routes to `analyze-frame` if `frame` key is present, otherwise routes to `process-camera`.
+**Fixes:**
 
----
+1. **Inference loop** — cache flush every 15 frames, or immediately on any
+   theft detection:
+   ```python
+   if self.frames_processed % 15 == 0 or result.get('classification') == 'theft':
+       torch.cuda.empty_cache()
+   ```
 
-### 4. Start Continuous Monitor
+2. **Before X3D inference** (inside `InferenceRunner`):
+   ```python
+   if torch.cuda.is_available():
+       torch.cuda.empty_cache()  # Force VRAM defrag before X3D tensor allocation
+   score = ai_service.x3d.predict(clip)
+   ```
 
-**POST** `/api/ai/monitor/start/`
+3. **X3D calls use `torch.inference_mode()`** (inside the X3D classifier)
+   to prevent gradient tracking overhead, saving both VRAM and compute.
 
-Starts a background thread that reads the camera's RTSP stream at full FPS, runs the AI pipeline on every frame, writes results to the DB every ~2 seconds (or immediately on theft), and triggers the video clip workflow on theft detection.
-
-```json
-{
-  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
-  "restart": false
-}
-```
-
-**Response (success):**
-```json
-{
-  "success": true,
-  "message": "Started continuous monitoring",
-  "already_running": false,
-  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
-  "camera_name": "Entrance Cam",
-  "rtsp_url_preview": "rtsp://admin:pass@192.168.1.10:554/..."
-}
-```
+4. **Environment variable** set at server startup:
+   ```python
+   # Allows PyTorch to split large memory blocks to reduce fragmentation
+   os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
+   ```
 
 ---
 
-### 5. Stop Continuous Monitor
+### 4.4 FAISS Permanent Memory — Suspects Are Never Forgotten
 
-**POST** `/api/ai/monitor/stop/`
+**Design Decision:** FAISS embedding purges triggered by DeepSORT track
+deletions are **explicitly disabled**.
 
-```json
-{
-  "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0"
-}
-```
+**Rationale:** When a suspect walks out of frame and DeepSORT drops their
+track, the default behavior would remove their embedding from the FAISS index,
+causing them to be assigned a brand-new `global_id` when they re-enter the
+frame. This defeats cross-camera Re-ID entirely.
 
----
+**Current behavior:**
+- Embeddings are **only added or updated** in the FAISS index, never deleted.
+- The `active_thief_global_ids` in-memory registry persists a suspect's
+  `global_id` until `StopTrackingView` explicitly calls `remove_active_thief()`.
+- FAISS's nearest-neighbor search will re-recognize a suspect from any camera
+  zone as long as their embedding remains in the index.
 
-### 6. Monitor Status
-
-**GET** `/api/ai/monitor/status/?camera_id=<optional>`
-
-```json
-{
-  "monitors": {
-    "65f3a2b1c8d4e5f6a7b8c9d0": {
-      "camera_id": "65f3a2b1c8d4e5f6a7b8c9d0",
-      "is_running": true,
-      "frames_processed": 4521,
-      "fps": 27.3,
-      "elapsed_seconds": 165.6,
-      "error_count": 0,
-      "last_result": { "classification": "normal", "confidence": 0.12 }
-    }
-  },
-  "total_monitors": 1
-}
-```
+**DeepSORT distance thresholds** were intentionally **relaxed** (higher `max_dist`)
+so that returning suspects — who may have slightly different poses or partial
+occlusions — are still correctly re-associated with their existing `global_id`
+rather than spawning ghost identities.
 
 ---
 
-### 7. Model Info
+### 4.5 Identity Hijacking Prevention
 
-**GET** `/api/ai/model-info/`
+**Problem:** When two people are in the same frame, FAISS could theoretically
+assign the same `global_id` to both, causing one person's bounding box to
+"teleport" to another person's position.
 
-```json
-{
-  "detection_model": "ModelExport/yolov8l.pt",
-  "pose_model": "ModelExport/yolov8l-pose.pt",
-  "ml_classifier": "ModelExport/trained_models/theft_classifier.pkl",
-  "device": "cuda:0",
-  "cuda_available": true,
-  "models_loaded": true,
-  "ml_classifier_loaded": true
-}
-```
-
----
-
-### 8. Inference History
-
-**GET** `/api/ai/inference-history/`
-
-Query params: `camera_id`, `classification`, `min_confidence`, `limit` (default 50, max 500)
-
----
-
-### 9. Health Check
-
-**GET** `/api/ai/health/` — No auth required.
-
-```json
-{
-  "status": "healthy",
-  "models_loaded": true,
-  "device": "cuda:0"
-}
-```
-
----
-
-## 🎬 Video Clip Pipeline (Theft Alert)
-
-When the continuous monitor detects a theft, it automatically:
-
-1. **Snapshots the rolling frame buffer** — a `deque(maxlen=150)` that holds ~5 seconds of frames at 30 FPS.
-2. **Encodes an MP4 clip** using `services/clip_encoding.py`:
-   - Codec: H.264 (`avc1` → `H264` → `X264` → `mp4v` fallback)
-   - Max width: 1280px (auto-downscaled)
-   - Duration: up to 5 seconds (minimum 8 frames)
-3. **Uploads to Cloudinary** via `apps/alerts/cloudinary_video.py`.
-4. **Saves `video_url` and `video_public_id`** back to the `Alert` row.
-5. Runs entirely in a **daemon thread** so the monitoring loop is never blocked.
-
-### Alert Model Fields (Updated)
+**Fix (in `inference_runner.py`):** A pre-pass collects all `global_id` values
+already active in the current frame before processing new tracks:
 
 ```python
-class Alert(models.Model):
-    id              = ObjectIdAutoField(primary_key=True)
-    camera_id       = ForeignKey('cameras.Camera', ...)
-    alert_type      = CharField(max_length=100)          # e.g. 'THEFT_DETECTED'
-    severity        = CharField(max_length=50)           # 'HIGH' | 'MEDIUM'
-    timestamp       = DateTimeField(default=timezone.now)
-    status          = CharField(...)                     # 'ACTIVE' | 'ACKED' | 'RESOLVED'
-    metadata        = JSONField(default=dict)            # confidence, tracks, FPS, etc.
-    video_url       = URLField(null=True, blank=True)    # Cloudinary secure URL
-    video_public_id = CharField(null=True, blank=True)  # Cloudinary public_id (for deletion)
+used_global_ids = set()
+# Pre-pass: claim all existing global IDs first
+for track_info in valid_tracks:
+    existing_gid = ai_service.db.get_global_id_for_track(...)
+    if existing_gid is not None:
+        used_global_ids.add(existing_gid)
+
+# Main pass: reject FAISS matches that are already in-frame
+if best_match_gid is not None and best_match_gid in used_global_ids:
+    global_id = None  # reject — assign new identity
 ```
-
-### Cloudinary Helper Functions (`apps/alerts/cloudinary_video.py`)
-
-| Function | Description |
-|----------|-------------|
-| `upload_video_to_cloudinary(file_path)` | Upload MP4, returns `(secure_url, public_id)` |
-| `upload_video_file(file_path)` | Backward-compatible wrapper, returns `secure_url` only |
-| `delete_cloudinary_video(public_id)` | Delete by known `public_id` |
-| `delete_cloudinary_video_from_url(url)` | Derive `public_id` from URL then delete |
-| `public_id_from_video_url(url)` | Extract `public_id` from Cloudinary URL |
-
-Credentials are read from **Django settings** first, falling back to `os.environ`.
 
 ---
 
-## 🔗 Integration with Existing Code
+### 4.6 Alert Cooldown Gatekeeper
 
-### Alert Creation Flow
+**Problem:** At 28 FPS, the pipeline would trigger ≈ 28 theft alerts per
+second the moment the X3D threshold was crossed, flooding the database.
 
-When `classification == "theft"` the monitor calls `_create_alert()`:
+**Fix (in `_monitor_loop`):** A 5-second cooldown enforced with a timestamp
+comparison:
+```python
+if is_theft_detected and (current_time - self.last_alert_time) >= 5.0:
+    self.last_alert_time = current_time
+    # Proceed: save DB alert, trigger VideoWriter
+else:
+    # COOLDOWN ACTIVE: suppress alert, keep is_suspicious=True in SSE payload
+    is_theft_detected = False
+    result['classification'] = 'normal'
+    result['alert_triggered'] = False
+    # NOTE: suspicious_ids and is_suspicious are NOT cleared here,
+    # so the canvas overlay and Node Graph remain active during cooldown.
+```
+
+---
+
+### 4.7 SSE Throttled to 10 FPS
+
+The monitoring loop processes frames at full camera FPS (up to 30). The SSE
+callback is rate-limited to `_SSE_MAX_FPS = 10.0` to prevent unnecessary
+bandwidth consumption on cloud deployments while still providing smooth
+bounding box animations:
 
 ```python
-alert = Alert.objects.create(
-    camera_id=camera,
-    alert_type='THEFT_DETECTED',
-    severity='HIGH' if confidence > 0.7 else 'MEDIUM',
-    status='ACTIVE',
-    metadata={
-        'confidence': ...,
-        'suspicious_tracks': [...],
-        'num_detections': ...,
-        'num_persons': ...,
-        'detected_by': 'CONTINUOUS_MONITOR',
-        'detection_timestamp': ...,
-        'fps': ...,
-    }
-)
-# Then triggers video clip upload in a daemon thread
-self._try_upload_alert_clip(alert)
-```
-
-The on-demand views (`AnalyzeFrameView`, `ProcessCameraView`) create alerts via the existing `AlertCreateSerializer`.
-
-### Existing Code — NOT Modified
-
-- `apps/accounts/*` — authentication & RBAC
-- `apps/alerts/models.py` / `views.py` / `serializers.py` / `signals.py` — existing alert logic
-- `apps/incidents/*` — incident management
-- `apps/cameras/*` — camera model & RTSP URLs
-- `apps/tracking/*` — tracking ingest
-- `ModelExport/*` — entire AI pipeline
-
-### Modified / Added
-
-| File | Change |
-|------|--------|
-| `apps/alerts/models.py` | Added `video_url`, `video_public_id` fields |
-| `apps/alerts/cloudinary_video.py` | **NEW** — Cloudinary upload/delete helpers |
-| `apps/ai_engine/services/continuous_monitor.py` | **NEW** — `ContinuousMonitor`, `MonitorManager` |
-| `apps/ai_engine/services/clip_encoding.py` | **NEW** — `write_frames_to_mp4()` |
-| `apps/ai_engine/api/views.py` | Added `StartContinuousMonitorView`, `StopContinuousMonitorView`, `MonitorStatusView` |
-| `apps/ai_engine/api/urls.py` | Added 3 monitor routes |
-| `config/urls.py` | Added `path('api/ai/', include('apps.ai_engine.api.urls'))` |
-
----
-
-## 🗄️ Database Models
-
-### AIInference (`ai_inferences` collection)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | ObjectIdAutoField | MongoDB ObjectId primary key |
-| `camera_id` | FK → Camera | Source camera (nullable) |
-| `detections` | JSONField | YOLOv8 detected bounding boxes |
-| `poses` | JSONField | YOLOv8-Pose keypoints |
-| `tracks` | JSONField | DeepSORT track data |
-| `classification` | CharField | `"theft"` or `"normal"` |
-| `confidence` | FloatField | ML classifier score (0–1) |
-| `frame_metadata` | JSONField | Frame-level stats |
-| `processing_time_ms` | FloatField | Inference duration |
-| `alert` | FK → Alert | Linked alert (if theft) |
-| `timestamp` | DateTimeField | When inference ran |
-
-### DetectionTrack (`detection_tracks` collection)
-
-| Field | Type | Description |
-|-------|------|-------------|
-| `id` | ObjectIdAutoField | |
-| `camera_id` | FK → Camera | |
-| `track_id` | IntegerField | DeepSORT track ID |
-| `object_type` | CharField | `"person"`, `"bag"`, `"object"` |
-| `first_seen`, `last_seen` | DateTimeField | Track timestamps |
-| `frame_count` | IntegerField | |
-| `hand_in_bag_frames` | IntegerField | Behavioral counter |
-| `hand_in_torso_frames` | IntegerField | Behavioral counter |
-| `fast_wrist_frames` | IntegerField | Behavioral counter |
-| `near_object_frames` | IntegerField | Behavioral counter |
-| `concealment_events` | IntegerField | Suspicious action count |
-| `ml_theft_score` | FloatField | Latest prediction |
-| `max_theft_score` | FloatField | Peak prediction |
-| `is_suspicious`, `is_active` | BooleanField | Status flags |
-
----
-
-## 🔧 Setup & Installation
-
-### 1. Dependencies (`newReq.txt`)
-
-```
-django
-djangorestframework
-torch
-ultralytics
-opencv-python
-deep-sort-realtime
-scikit-learn
-joblib
-cloudinary        # For video clip upload
-python-dotenv
-```
-
-### 2. Environment Variables (`.env`)
-
-```bash
-# Django
-SECRET_KEY=...
-DEBUG=True
-ALLOWED_HOSTS=localhost,127.0.0.1
-
-# MongoDB Atlas
-MONGO_URI=mongodb+srv://...
-MONGO_DB_NAME=theft_sentinel
-
-# Email (SMTP)
-EMAIL_HOST=smtp.gmail.com
-EMAIL_PORT=587
-EMAIL_USE_TLS=True
-EMAIL_HOST_USER=...
-EMAIL_HOST_PASSWORD=...
-FRONTEND_URL=http://localhost:3000
-
-# CORS
-CORS_ALLOWED_ORIGINS=http://localhost:3000,http://localhost:8080
-
-# Twilio (SMS)
-TWILIO_ACCOUNT_SID=...
-TWILIO_AUTH_TOKEN=...
-TWILIO_PHONE_NUMBER=...
-
-# Cloudinary (video clip storage)
-CLOUDINARY_CLOUD_NAME=...
-CLOUDINARY_API_KEY=...
-CLOUDINARY_API_SECRET=...
-```
-
-### 3. Database Migration
-
-```bash
-python manage.py migrate ai_engine
-python manage.py migrate alerts   # picks up video_url / video_public_id
-```
-
-### 4. Start Server
-
-```bash
-python manage.py runserver
-# AI models load automatically on startup
-```
-
-### 5. Verify
-
-```bash
-curl http://localhost:8000/api/ai/health/
-# Expected: {"status":"healthy","models_loaded":true,"device":"cuda:0"}
+min_interval = 1.0 / self._SSE_MAX_FPS   # 0.1 s
+if (now - self._last_callback_time) >= min_interval:
+    self.callback(self.camera_id, result)
 ```
 
 ---
 
-## 🔐 Security & Permissions
+## 5. Frontend Rendering — `CameraFeedWithOverlay.jsx`
 
-All endpoints require JWT authentication (`Authorization: Bearer <token>`) except `/api/ai/health/`.
+### 5.1 Architecture (Z-Index Layers)
 
-| Role | AI Endpoints | Monitor Control | Inference History |
-|------|-------------|----------------|-------------------|
-| Admin | ✅ Full | ✅ Full | ✅ Full |
-| Security In-Charge | ✅ Full | ✅ Full | ✅ Full |
-| Security Guard | ✅ Read | ❌ | ✅ Read |
-
----
-
-## 📈 Performance
-
-| Mode | Expected Time (GPU) |
-|------|-------------------|
-| Detection only | 30–50 ms |
-| Detection + Pose | 80–120 ms |
-| Full pipeline (Detection + Pose + ML) | 100–150 ms |
-| CPU mode | 2–5× slower |
-
-**Continuous Monitor:**
-- Processes at full stream FPS (15–30)
-- DB write every ~2 s (60 frames at 30 FPS) or immediately on theft
-- Clip encoding + Cloudinary upload in non-blocking daemon thread
-- Auto-reconnect after 10 consecutive read errors
-
-**Clip Encoding:**
-- Max clip width: 1280 px
-- FPS: clamped to 8–60; falls back to 25 if stream FPS < 5
-- Codec: H.264 (`avc1` preferred, browser-compatible)
-
----
-
-## 🐛 Troubleshooting
-
-### AI Models Not Loading
-
-**Error:** `"AI service not initialized"`
-
-1. Check `ModelExport/` directory exists with all three model files:
-   - `yolov8l.pt`
-   - `yolov8l-pose.pt`
-   - `trained_models/theft_classifier.pkl`
-2. Run `python manage.py runserver` and watch logs.
-
-### CUDA Not Available
-
-**Error:** `"CUDA not available. Using CPU"`
-
-```bash
-pip install torch torchvision --index-url https://download.pytorch.org/whl/cu118
+```
+┌─────────────────────────────────────────┐
+│  <img>   z-index: 1  — raw MJPEG feed   │
+│  <canvas> z-index: 10 — bounding boxes   │
+│           pointer-events: none (click-   │
+│           through so video is still      │
+│           interactive)                   │
+│  Alert badge / LIVE badge  z-index: 20   │
+└─────────────────────────────────────────┘
 ```
 
-### Frame Decoding Error
+### 5.2 `knownThievesRef` — Frontend Permanent Memory
 
-**Error:** `"Failed to decode frame from base64"`
+The `knownThievesRef` is a `useRef(new Set())` that acts as a permanent
+in-memory thief registry on the frontend, mirroring the backend's
+`active_thief_global_ids` registry.
 
-- Ensure base64 string is valid (strip `data:image/...;base64,` prefix if present).
-- Use JPEG or PNG images.
+**Behaviour:**
+1. When a new SSE event arrives with `is_suspicious: true` for a `global_id`
+   not yet in `knownThievesRef`, the ID is immediately added to the Set.
+2. Every future SSE event is checked against `knownThievesRef`. If the
+   `global_id` is already in the Set, the track is treated as suspicious
+   **regardless** of the current frame's `x3d_score`.
+3. This ensures the bounding box remains visible even when the X3D score
+   dips below the threshold between inference windows, or when DeepSORT
+   temporarily loses and re-acquires the track.
 
-### Cloudinary Clip Not Uploading
-
-1. Verify `CLOUDINARY_CLOUD_NAME`, `CLOUDINARY_API_KEY`, `CLOUDINARY_API_SECRET` are set.
-2. Check server logs for `clip-upload-<alert_id>` thread errors.
-3. Confirm `pip install cloudinary` is installed.
-
-### Monitor Not Starting
-
-1. Verify camera RTSP URL is reachable: `cv2.VideoCapture(rtsp_url).isOpened()`.
-2. Check AI service is ready: `GET /api/ai/health/`.
-3. Look for `"Failed to open stream"` in logs.
-
-### Alert Has No `video_url`
-
-- Frame buffer may have been empty at the moment of detection (monitor just started).
-- Cloudinary upload failed — check daemon thread logs.
-- The clip upload is asynchronous; `video_url` is patched in a few seconds after the alert is created.
+**"Normal" tracks are completely ignored** — the canvas draws **only** tracks
+that are either newly flagged by `is_suspicious` or already present in
+`knownThievesRef`.
 
 ---
 
-## ✅ Integration Checklist
+### 5.3 LERP Animation & 3.5-Second TTL Grace Period
 
-- [x] AI models load automatically on server startup
-- [x] 9 API endpoints functional
-- [x] On-demand frame analysis (`analyze-frame`, `process-camera`, `full-pipeline`)
-- [x] Continuous live stream monitoring (`monitor/start`, `monitor/stop`, `monitor/status`)
-- [x] 5-second rolling frame buffer per monitor
-- [x] Theft → MP4 clip encoded in-memory
-- [x] MP4 clip uploaded to Cloudinary (non-blocking)
-- [x] `video_url` + `video_public_id` saved to `Alert` row
-- [x] Alert creation via existing `AlertCreateSerializer`
-- [x] `AIInference` and `DetectionTrack` DB models migrated
-- [x] RBAC permissions enforced on all endpoints
-- [x] Auto-reconnect on stream failures
-- [x] Admin interface configured
-- [x] Test suite provided (`test_ai_engine.py`)
-- [x] Zero modifications to existing business logic
+**Problem:** HTTP polling and SSE network jitter can cause frames to arrive
+irregularly. If the canvas cleared on every "missing" frame, bounding boxes
+would flicker at 5–10 Hz.
+
+**Fix:** The `requestAnimationFrame` loop (running at 60 Hz) uses LERP
+(Linear Interpolation) to smoothly animate bounding boxes toward their
+target positions, and a **3.5-second TTL (grace period)** to keep boxes
+on screen even when no new SSE event has arrived:
+
+```javascript
+const LERP_FACTOR = 0.2;  // applied every rAF tick (~60 Hz)
+
+// TTL check — 3500 ms without an update → person left the frame
+if (now - timestamp > 3500) {
+    latchedSuspectsRef.current.delete(trackId);
+    delete targetBoxRef.current[trackId];
+    delete visualBoxRef.current[trackId];
+    continue;
+}
+
+// LERP step — smooth movement toward target bbox
+visual[0] += (target.bbox[0] - visual[0]) * LERP_FACTOR;
+// ... (all 4 coordinates)
+```
+
+The 3.5 s window is deliberately longer than the SSE throttle interval (100 ms)
+and HTTP polling latency, ensuring boxes survive typical network hiccups without
+flickering.
 
 ---
 
-## 🎉 What Was Changed vs. Original Integration
+### 5.4 NaN Poisoning Guard
 
-| Area | Original | Current |
-|------|----------|---------|
-| AI endpoints | 6 | 9 (added monitor start/stop/status) |
-| Services | `ai_service.py`, `inference_runner.py` | + `continuous_monitor.py`, `clip_encoding.py` |
-| Alert model | No video fields | `video_url`, `video_public_id` added |
-| Cloudinary | Not integrated | `apps/alerts/cloudinary_video.py` |
-| Frame buffer | None | 150-frame rolling deque (~5 s at 30 FPS) |
-| Clip pipeline | None | encode → upload → save URL (async) |
-| Monitoring | Poll-based (2-s intervals) | Continuous full-FPS stream |
+DeepSORT occasionally produces `NaN` or `undefined` bbox values during track
+initialization. The canvas loop guards against this at two points:
+
+```javascript
+// Guard 1: Before LERP calculation
+if (target && target.bbox && target.bbox.length === 4 && !target.bbox.some(isNaN)) {
+    // safe to LERP
+}
+
+// Guard 2: Before strokeRect
+if (visual && visual.length === 4 && !visual.some(isNaN)) {
+    // safe to draw
+} else {
+    delete visualBoxRef.current[trackId]; // force reset on next frame
+}
+```
 
 ---
 
-## 📞 Support
+## 6. `LiveTrackingNodeGraph.jsx` — React Portal Architecture
 
-1. Check this documentation
-2. Check server logs (`python manage.py runserver`)
-3. Test health: `GET /api/ai/health/`
-4. Test monitor status: `GET /api/ai/monitor/status/`
-5. Verify model files in `ModelExport/`
-6. Verify Cloudinary credentials in `.env`
+### 6.1 The CSS Containment Problem
+
+The Control Room page uses a CSS grid with `overflow: hidden` on the camera
+grid container. This causes any absolutely-positioned child (like a footer
+panel) to be clipped to the grid cell bounds, making the Node Graph invisible
+or partially hidden.
+
+### 6.2 The Fix: `ReactDOM.createPortal`
+
+`LiveTrackingNodeGraph.jsx` uses `ReactDOM.createPortal` to teleport its
+rendered DOM nodes **directly into `document.body`**, completely bypassing
+the Control Room's CSS containment:
+
+```jsx
+import { createPortal } from 'react-dom';
+
+// Rendered outside the ControlRoom grid — appended to <body>
+return createPortal(
+  <div className="fixed bottom-0 left-0 right-0 z-50 ...">
+    {/* suspect node graph */}
+  </div>,
+  document.body
+);
+```
+
+This gives the Node Graph a clean `z-index: 50` stacking context with no
+parent overflow constraints.
+
+---
+
+## 7. Stop Tracking — Dual Synchronization Protocol
+
+Clearing a suspect requires **two simultaneous actions** to be fully
+effective:
+
+### 7.1 Step A — Backend API Call (JWT Authenticated)
+
+```javascript
+// LiveTrackingNodeGraph.jsx
+await axios.post(
+  `${API_BASE_URL}/api/ai/suspects/${globalId}/stop-tracking/`,
+  {},
+  { headers: { Authorization: `Bearer ${localStorage.getItem('access_token')}` } }
+);
+```
+
+This calls `StopTrackingView`, which:
+1. Calls `ai_service.remove_active_thief(global_id_int)`
+2. Removes the ID from the backend `active_thief_global_ids` Set
+3. Future SSE events from the pipeline will no longer carry `is_suspicious: true`
+   for that `global_id`
+
+### 7.2 Step B — Frontend Global Event (`ai-suspect-cleared`)
+
+```javascript
+// Immediately after the API call succeeds:
+window.dispatchEvent(new CustomEvent('ai-suspect-cleared', { detail: { globalId } }));
+```
+
+`CameraFeedWithOverlay.jsx` listens for this event on **every active camera
+feed instance**:
+
+```javascript
+const handleSuspectCleared = (e) => {
+  const globalId = String(e.detail.globalId);
+  knownThievesRef.current.delete(globalId);      // remove from permanent memory
+  latchedSuspectsRef.current.delete(globalId);   // stop drawing
+  delete targetBoxRef.current[globalId];
+  delete visualBoxRef.current[globalId];
+  // Fallback scan: clear any track-ID-keyed entry whose label matches
+  for (const [key, target] of Object.entries(targetBoxRef.current)) {
+    if (target.label === `THIEF G:${globalId}`) { /* ... clear ... */ }
+  }
+};
+```
+
+**Why both steps are necessary:**
+- The API call stops *future* SSE events from re-flagging the suspect.
+- The frontend event *instantly* wipes the bounding box on all open camera
+  overlays without waiting for the next SSE poll cycle (100 ms latency).
+
+Without Step B, the bounding box remains on screen for up to 3.5 seconds
+(the TTL grace period) after the API call returns.
+
+---
+
+## 8. SSE Registry — `sse_registry.py`
+
+The `SSERegistry` is a thread-safe publish/subscribe broker that decouples
+the AI inference threads from the SSE HTTP connections:
+
+```
+InferenceThread → sse_registry.publish(camera_id, result)
+                        │
+                   Queue.put() for each subscriber
+                        │
+SSE HTTP handler ← Queue.get(timeout=25)  → yield "data: {...}\n\n"
+```
+
+Each SSE client (`EventSource` in the browser) gets its own `queue.Queue`.
+The registry manages subscription and cleanup automatically when the client
+disconnects (`GeneratorExit` in the streaming generator).
+
+---
+
+## 9. Database Models Involved in the AI Pipeline
+
+| Model | App | Purpose |
+|-------|-----|---------|
+| `Camera` | `cameras` | Source of RTSP URL; `ai_monitoring_enabled` flag persists monitor state |
+| `AIInference` | `ai_engine` | Stores every inference result (classification, confidence, tracks JSON) |
+| `Alert` | `alerts` | Created on theft detection; stores `video_url` (Cloudinary clip) |
+| `TrackingRecord` | `tracking` | Per-camera sighting record written by `TrackingService.save_tracks()` |
+| `DetectionTrack` | `ai_engine` | Stores behavioural feature counts per track (hand-in-bag, etc.) |
+
+---
+
+## 10. Key Configuration Constants
+
+```python
+# ai_pipeline/ai_config/config.py
+X3D_THEFT_THRESHOLD      = 0.80   # Triggers "theft" + alert
+X3D_SUSPICIOUS_THRESHOLD = 0.50   # Flags track as suspicious (no alert)
+X3D_INFERENCE_EVERY      = 5      # Run X3D every N frames per global_id
+X3D_CLIP_FRAMES          = 8      # Min frames in ClipBuffer to run X3D
+
+EMBEDDING_UPDATE_INTERVAL = 10    # Update FAISS embedding every N frames
+
+# continuous_monitor.py
+_SSE_MAX_FPS     = 10.0           # Cap SSE callback at 10 events/second
+ALERT_COOLDOWN_S = 5.0            # Min seconds between consecutive alerts
+FRAME_BUFFER_LEN = 150            # Rolling buffer depth (≈5 s at 30 FPS)
+CAPTURE_RESOLUTION = (640, 480)   # Immediate downscale target
+```

@@ -41,9 +41,6 @@ import MyIncidents from '../pages/incidents/MyIncidents';
 import UnassignedIncidents from '../pages/incidents/Unassigned';
 import IncidentView from '../pages/incidents/View';
 
-// Tracking Pages
-import TrackingRecords from '../pages/tracking/Records';
-import PersonPath from '../pages/tracking/PersonPath';
 
 // Feedback Pages
 import FeedbackList from '../pages/feedback/List';
@@ -57,7 +54,6 @@ import PersonnelEdit from '../pages/personnel/Edit';
 
 // AI Pages
 import AIDashboard from '../pages/ai/Dashboard';
-import AIHistory from '../pages/ai/History';
 
 // Protected Route Component - Redirects unauthenticated users to login
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -322,25 +318,7 @@ const AppRouter = () => {
           />
           <Route path="incidents/:id" element={<IncidentView />} />
 
-          {/* Tracking Routes */}
-          <Route
-            path="tracking"
-            element={
-              <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE']}>
-                <TrackingRecords />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="tracking/person-path"
-            element={
-              <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE']}>
-                <PersonPath />
-              </ProtectedRoute>
-            }
-          />
 
-          {/* Feedback Routes */}
           <Route
             path="feedback"
             element={
@@ -392,20 +370,11 @@ const AppRouter = () => {
             }
           />
 
-          {/* AI Routes - Admin and Security Incharge */}
           <Route
             path="ai/dashboard"
             element={
               <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE']}>
                 <AIDashboard />
-              </ProtectedRoute>
-            }
-          />
-          <Route
-            path="ai/history"
-            element={
-              <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE']}>
-                <AIHistory />
               </ProtectedRoute>
             }
           />

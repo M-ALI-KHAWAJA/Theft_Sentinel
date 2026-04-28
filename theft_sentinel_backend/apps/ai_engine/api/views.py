@@ -486,50 +486,6 @@ class ModelInfoView(views.APIView):
             return Response(serializer.data, status=status.HTTP_200_OK)
         return Response(model_info, status=status.HTTP_200_OK)
 
-
-class InferenceHistoryView(views.APIView):
-    """
-    GET /api/ai/inference-history/
-    
-    Get inference history with optional filters
-    """
-    permission_classes = [IsAuthenticated]
-    
-    def get(self, request):
-        queryset = AIInference.objects.select_related('camera_id', 'alert').all()
-        
-        # Apply filters
-        camera_id = request.query_params.get('camera_id')
-        if camera_id:
-            queryset = queryset.filter(camera_id=camera_id)
-        
-        classification = request.query_params.get('classification')
-        if classification:
-            queryset = queryset.filter(classification=classification)
-        
-        min_confidence = request.query_params.get('min_confidence')
-        if min_confidence:
-            try:
-                queryset = queryset.filter(confidence__gte=float(min_confidence))
-            except ValueError:
-                pass
-        
-        # Limit results
-        limit = request.query_params.get('limit', 50)
-        try:
-            limit = min(int(limit), 500)
-        except ValueError:
-            limit = 50
-        
-        queryset = queryset[:limit]
-        
-        serializer = AIInferenceSerializer(queryset, many=True)
-        return Response({
-            'count': len(serializer.data),
-            'results': serializer.data
-        }, status=status.HTTP_200_OK)
-
-
 class HealthCheckView(views.APIView):
     """
     GET /api/ai/health/
