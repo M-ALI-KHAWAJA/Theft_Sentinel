@@ -35,10 +35,14 @@ class FeedbackListCreateView(generics.ListCreateAPIView):
     
     def get_queryset(self):
         queryset = Feedback.objects.select_related('user_id').all()
+
+        user_branch = getattr(self.request.user, "branch", None)
+        scoped = getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None
         
         # Admin: Can view all feedback
         if self.request.user.role == 'ADMIN':
-            pass  # No filtering, view all
+            if scoped:
+                queryset = queryset.filter(user_id__branch=user_branch)
         else:
             # Security In-Charge & Security Guard: Only view their own feedback
             queryset = queryset.filter(user_id=self.request.user)
@@ -74,10 +78,14 @@ class FeedbackDetailView(generics.RetrieveUpdateDestroyAPIView):
     
     def get_queryset(self):
         queryset = Feedback.objects.select_related('user_id').all()
+
+        user_branch = getattr(self.request.user, "branch", None)
+        scoped = getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None
         
         # Admin: Can view all feedback
         if self.request.user.role == 'ADMIN':
-            pass  # No filtering
+            if scoped:
+                queryset = queryset.filter(user_id__branch=user_branch)
         else:
             # Security In-Charge & Security Guard: Only access their own feedback
             queryset = queryset.filter(user_id=self.request.user)

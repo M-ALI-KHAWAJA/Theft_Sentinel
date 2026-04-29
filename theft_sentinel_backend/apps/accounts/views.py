@@ -6,6 +6,7 @@ from rest_framework.permissions import IsAuthenticated, AllowAny
 from rest_framework.response import Response
 from rest_framework_simplejwt.views import TokenObtainPairView, TokenRefreshView
 from rest_framework_simplejwt.tokens import RefreshToken
+from rest_framework_simplejwt.exceptions import TokenError
 from django.contrib.auth import get_user_model
 from django.utils import timezone
 from datetime import timedelta
@@ -50,7 +51,12 @@ class RegisterView(generics.CreateAPIView):
     def create(self, request, *args, **kwargs):
         serializer = self.get_serializer(data=request.data)
         serializer.is_valid(raise_exception=True)
-        user = serializer.save()
+        # All users created by a Branch Admin belong to the same branch.
+        # Super Admin may create users without a branch (not typical).
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and getattr(request.user, "branch", None) is not None:
+            user = serializer.save(branch=request.user.branch)
+        else:
+            user = serializer.save()
         
         return Response({
             'user': UserSerializer(user).data,
@@ -68,20 +74,17 @@ class LogoutView(views.APIView):
     permission_classes = [IsAuthenticated]
     
     def post(self, request):
-        try:
-            refresh_token = request.data.get('refresh_token')
-            if not refresh_token:
-                return Response(
-                    {'error': 'Refresh token is required'}, 
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-            
-            token = RefreshToken(refresh_token)
-            token.blacklist()
-            
+        refresh_token = request.data.get('refresh_token')
+        if not refresh_token:
             return Response({'message': 'Logout successful'}, status=status.HTTP_200_OK)
-        except Exception as e:
-            return Response({'error': str(e)}, status=status.HTTP_400_BAD_REQUEST)
+
+        try:
+            token = RefreshToken(refresh_token)
+            if hasattr(token, 'blacklist'):
+                token.blacklist()
+            return Response({'message': 'Logout successful'}, status=status.HTTP_200_OK)
+        except TokenError:
+            return Response({'message': 'Logout successful'}, status=status.HTTP_200_OK)
 
 
 class UserProfileView(generics.RetrieveUpdateAPIView):
@@ -132,6 +135,9 @@ class UserListView(generics.ListAPIView):
     
     def get_queryset(self):
         queryset = User.objects.all()
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            queryset = queryset.filter(branch=user_branch)
         role = self.request.query_params.get('role', None)
         if role:
             queryset = queryset.filter(role=role)
@@ -146,19 +152,31 @@ class UserDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = User.objects.all()
     serializer_class = UserSerializer
     permission_classes = [IsAuthenticated, CanManageUsers]
+
+    def get_queryset(self):
+        qs = User.objects.all()
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            qs = qs.filter(branch=user_branch)
+        return qs
     
     def update(self, request, *args, **kwargs):
-        """Override update to enforce Admin uniqueness"""
+        """Override update to enforce per-branch Admin uniqueness"""
         partial = kwargs.pop('partial', False)
         instance = self.get_object()
         
         # Check if trying to set role to ADMIN
         if 'role' in request.data and request.data['role'] == 'ADMIN':
-            # Check if another Admin already exists (excluding current user)
-            existing_admin = User.objects.filter(role='ADMIN', is_active=True).exclude(pk=instance.pk).first()
-            if existing_admin:
+            # Check if another Admin already exists in the same branch (excluding current user)
+            branch = getattr(instance, "branch", None)
+            existing_admin = (
+                User.objects.filter(role='ADMIN', is_active=True, branch=branch)
+                .exclude(pk=instance.pk)
+                .first()
+            )
+            if existing_admin and branch is not None:
                 return Response(
-                    {'role': ['Only one Admin can exist in the system. An Admin user already exists.']},
+                    {'role': ['Only one Branch Admin can exist per branch. A Branch Admin already exists for this branch.']},
                     status=status.HTTP_400_BAD_REQUEST
                 )
         
@@ -478,12 +496,12 @@ class ResetPasswordView(views.APIView):
                         status=status.HTTP_400_BAD_REQUEST
                     )
             
-            # Verify user is admin
-            if user.role != 'ADMIN':
+            # Verify user is eligible for direct token-based reset
+            if user.role not in ['ADMIN', 'SUPER_ADMIN']:
                 # Log non-admin attempt
                 self._log_audit(
                     email=user_email,
-                    is_admin=False,
+                    is_admin=user.role == 'ADMIN' if user else False,
                     success=False,
                     reason='Non-admin user attempted password reset',
                     request=request

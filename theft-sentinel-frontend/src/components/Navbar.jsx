@@ -31,6 +31,8 @@ const Navbar = () => {
 
   const getRoleDisplay = (role) => {
     switch (role) {
+      case 'SUPER_ADMIN':
+        return 'Super Admin';
       case 'ADMIN':
         return 'Admin';
       case 'SECURITY_INCHARGE':
@@ -42,6 +44,7 @@ const Navbar = () => {
     }
   };
 
+  const showTenantContext = user?.role !== 'SUPER_ADMIN' && user?.company_name;
 
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-dark-surface/95 backdrop-blur-lg border-b border-dark-border shadow-dark">
@@ -58,6 +61,27 @@ const Navbar = () => {
               </span>
             </Link>
           </div>
+
+          {showTenantContext && (
+            <div className="hidden xl:flex items-center gap-4 px-4 py-2 glass rounded-lg border border-dark-border max-w-xl">
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-wider text-dark-text-muted">Company</p>
+                <p className="text-xs font-semibold text-white truncate max-w-[160px]">{user.company_name}</p>
+              </div>
+              <div className="h-8 w-px bg-dark-border" />
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-wider text-dark-text-muted">Branch</p>
+                <p className="text-xs font-semibold text-white truncate max-w-[140px]">{user.branch_name || '-'}</p>
+              </div>
+              <div className="h-8 w-px bg-dark-border" />
+              <div className="min-w-0">
+                <p className="text-[10px] uppercase tracking-wider text-dark-text-muted">Admin</p>
+                <p className="text-xs font-semibold text-white truncate max-w-[140px]">
+                  {user.branch_admin_name || '-'}
+                </p>
+              </div>
+            </div>
+          )}
 
           {/* Right: Profile Info & Logout */}
           <div className="flex items-center space-x-4">

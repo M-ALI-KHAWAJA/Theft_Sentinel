@@ -21,7 +21,9 @@ function AppContent() {
       const isPublicRoute = currentPath === '/' || 
                            currentPath === '/login' || 
                            currentPath.startsWith('/forgot-password') || 
-                           currentPath.startsWith('/reset-password');
+                           currentPath.startsWith('/reset-password') ||
+                           currentPath === '/create-super-admin' ||
+                           currentPath === '/register-branch';
 
       if (accessToken && !isPublicRoute) {
         setAuthTokens({ access: accessToken, refresh: refreshToken });

@@ -11,9 +11,15 @@ import GuardLayout from '../layouts/GuardLayout';
 import Login from '../pages/auth/Login';
 import ForgotPassword from '../pages/auth/ForgotPassword';
 import ResetPassword from '../pages/auth/ResetPassword';
+import SuperAdminForgotPassword from '../pages/auth/SuperAdminForgotPassword';
+import BranchAdminForgotPassword from '../pages/auth/BranchAdminForgotPassword';
 
 // Landing Page
 import Landing from '../pages/Landing';
+
+// Tenancy (public)
+import CreateSuperAdmin from '../pages/tenancy/CreateSuperAdmin';
+import BranchRegister from '../pages/tenancy/BranchRegister';
 
 // Dashboard Pages
 import Overview from '../pages/dashboard/Overview';
@@ -52,8 +58,20 @@ import PersonnelList from '../pages/personnel/List';
 import PersonnelCreate from '../pages/personnel/Create';
 import PersonnelEdit from '../pages/personnel/Edit';
 
+// Profile
+import TenantProfile from '../pages/profile/TenantProfile';
+
 // AI Pages
 import AIDashboard from '../pages/ai/Dashboard';
+
+// Super Admin pages
+import SuperAdminBranches from '../pages/superadmin/Branches';
+import SuperAdminResetRequests from '../pages/superadmin/ResetRequests';
+import SuperAdminProfile from '../pages/superadmin/Profile';
+import SuperAdminQueries from '../pages/superadmin/Queries';
+
+// Support
+import SupportQueries from '../pages/support/Queries';
 
 // Protected Route Component - Redirects unauthenticated users to login
 const ProtectedRoute = ({ children, allowedRoles }) => {
@@ -70,6 +88,9 @@ const ProtectedRoute = ({ children, allowedRoles }) => {
     // Redirect based on role
     if (user.role === 'SECURITY_GUARD') {
       return <Navigate to="/dashboard/guard" replace />;
+    }
+    if (user.role === 'SUPER_ADMIN') {
+      return <Navigate to="/super-admin/branches" replace />;
     }
     return <Navigate to="/dashboard" replace />;
   }
@@ -89,6 +110,9 @@ const PublicRoute = ({ children }) => {
     if (user.role === 'SECURITY_GUARD') {
       return <Navigate to="/dashboard/guard" replace />;
     }
+    if (user.role === 'SUPER_ADMIN') {
+      return <Navigate to="/super-admin/branches" replace />;
+    }
     return <Navigate to="/dashboard" replace />;
   }
 
@@ -103,6 +127,9 @@ const RoleBasedRedirect = () => {
   if (user?.role === 'SECURITY_GUARD') {
     return <Navigate to="/dashboard/guard" replace />;
   }
+  if (user?.role === 'SUPER_ADMIN') {
+    return <Navigate to="/super-admin/branches" replace />;
+  }
   
   return <Navigate to="/dashboard" replace />;
 };
@@ -115,6 +142,8 @@ const AppRouter = () => {
     if (!user) return AdminLayout;
     
     switch (user.role) {
+      case 'SUPER_ADMIN':
+        return AdminLayout;
       case 'ADMIN':
         return AdminLayout;
       case 'SECURITY_INCHARGE':
@@ -152,9 +181,25 @@ const AppRouter = () => {
           path="/forgot-password" 
           element={
             <PublicRoute>
-              <ForgotPassword />
+              <Navigate to="/login" replace />
             </PublicRoute>
           } 
+        />
+        <Route
+          path="/forgot-password/super-admin"
+          element={
+            <PublicRoute>
+              <SuperAdminForgotPassword />
+            </PublicRoute>
+          }
+        />
+        <Route
+          path="/forgot-password/branch-admin"
+          element={
+            <PublicRoute>
+              <BranchAdminForgotPassword />
+            </PublicRoute>
+          }
         />
         <Route 
           path="/reset-password" 
@@ -165,6 +210,24 @@ const AppRouter = () => {
           } 
         />
 
+        {/* Public tenancy routes */}
+        <Route
+          path="/create-super-admin"
+          element={
+            <PublicRoute>
+              <CreateSuperAdmin />
+            </PublicRoute>
+          }
+        />
+        <Route
+          path="/register-branch"
+          element={
+            <PublicRoute>
+              <BranchRegister />
+            </PublicRoute>
+          }
+        />
+
         {/* Protected Routes - All authenticated routes */}
         <Route
           element={
@@ -173,6 +236,58 @@ const AppRouter = () => {
             </ProtectedRoute>
           }
         >
+          {/* Super Admin Routes */}
+          <Route
+            path="super-admin/branches"
+            element={
+              <ProtectedRoute allowedRoles={['SUPER_ADMIN']}>
+                <SuperAdminBranches />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="super-admin/reset-requests"
+            element={
+              <ProtectedRoute allowedRoles={['SUPER_ADMIN']}>
+                <SuperAdminResetRequests />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="super-admin/profile"
+            element={
+              <ProtectedRoute allowedRoles={['SUPER_ADMIN']}>
+                <SuperAdminProfile />
+              </ProtectedRoute>
+            }
+          />
+          <Route
+            path="super-admin/queries"
+            element={
+              <ProtectedRoute allowedRoles={['SUPER_ADMIN']}>
+                <SuperAdminQueries />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="support/queries"
+            element={
+              <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE', 'SECURITY_GUARD']}>
+                <SupportQueries />
+              </ProtectedRoute>
+            }
+          />
+
+          <Route
+            path="profile"
+            element={
+              <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE', 'SECURITY_GUARD']}>
+                <TenantProfile />
+              </ProtectedRoute>
+            }
+          />
+
           {/* Dashboard Routes */}
           <Route 
             path="dashboard" 

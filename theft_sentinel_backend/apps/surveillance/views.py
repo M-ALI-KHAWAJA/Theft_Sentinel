@@ -22,6 +22,10 @@ class SurveillanceEventListView(generics.ListAPIView):
     
     def get_queryset(self):
         queryset = SurveillanceEvent.objects.select_related('camera_id').all()
+
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            queryset = queryset.filter(camera_id__branch=user_branch)
         
         # Filter by camera
         camera_id = self.request.query_params.get('camera_id', None)
@@ -52,7 +56,11 @@ class SurveillanceEventDetailView(generics.RetrieveAPIView):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        return SurveillanceEvent.objects.select_related('camera_id').all()
+        qs = SurveillanceEvent.objects.select_related('camera_id').all()
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            qs = qs.filter(camera_id__branch=user_branch)
+        return qs
 
 
 class SurveillanceEventIngestView(views.APIView):

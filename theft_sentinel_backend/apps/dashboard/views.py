@@ -43,44 +43,68 @@ class DashboardOverviewView(views.APIView):
         """
         Get dashboard overview stats
         """
+        user_branch = getattr(request.user, "branch", None)
+        scoped = getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None
+
         # Time ranges
         now = timezone.now()
         today_start = now.replace(hour=0, minute=0, second=0, microsecond=0)
         week_ago = now - timedelta(days=7)
         month_ago = now - timedelta(days=30)
         
+        cameras_qs = Camera.objects.all()
+        if scoped:
+            cameras_qs = cameras_qs.filter(branch=user_branch)
+
         # Camera stats
-        total_cameras = Camera.objects.count()
-        online_cameras = Camera.objects.filter(status='ONLINE').count()
-        offline_cameras = Camera.objects.filter(status='OFFLINE').count()
+        total_cameras = cameras_qs.count()
+        online_cameras = cameras_qs.filter(status='ONLINE').count()
+        offline_cameras = cameras_qs.filter(status='OFFLINE').count()
         
+        alerts_qs = Alert.objects.all()
+        if scoped:
+            alerts_qs = alerts_qs.filter(camera_id__branch=user_branch)
+
         # Alert stats
-        total_alerts = Alert.objects.count()
-        active_alerts = Alert.objects.filter(status='ACTIVE').count()
-        alerts_today = Alert.objects.filter(timestamp__gte=today_start).count()
-        alerts_this_week = Alert.objects.filter(timestamp__gte=week_ago).count()
+        total_alerts = alerts_qs.count()
+        active_alerts = alerts_qs.filter(status='ACTIVE').count()
+        alerts_today = alerts_qs.filter(timestamp__gte=today_start).count()
+        alerts_this_week = alerts_qs.filter(timestamp__gte=week_ago).count()
         
         # Alert severity breakdown
-        alerts_by_severity = Alert.objects.values('severity').annotate(count=Count('id'))
+        alerts_by_severity = alerts_qs.values('severity').annotate(count=Count('id'))
         severity_breakdown = {item['severity']: item['count'] for item in alerts_by_severity}
         
+        incidents_qs = Incident.objects.all()
+        if scoped:
+            incidents_qs = incidents_qs.filter(alert_id__camera_id__branch=user_branch)
+
         # Incident stats
-        total_incidents = Incident.objects.count()
-        active_incidents = Incident.objects.exclude(status='RESOLVED').count()
-        resolved_incidents = Incident.objects.filter(status='RESOLVED').count()
-        incidents_today = Incident.objects.filter(created_at__gte=today_start).count()
+        total_incidents = incidents_qs.count()
+        active_incidents = incidents_qs.exclude(status='RESOLVED').count()
+        resolved_incidents = incidents_qs.filter(status='RESOLVED').count()
+        incidents_today = incidents_qs.filter(created_at__gte=today_start).count()
         
         # Incident status breakdown
-        incidents_by_status = Incident.objects.values('status').annotate(count=Count('id'))
+        incidents_by_status = incidents_qs.values('status').annotate(count=Count('id'))
         status_breakdown = {item['status']: item['count'] for item in incidents_by_status}
         
         # Personnel stats
-        total_personnel = Personnel.objects.count()
-        total_users = User.objects.filter(is_active=True).count()
+        personnel_qs = Personnel.objects.all()
+        users_qs = User.objects.filter(is_active=True)
+        if scoped:
+            personnel_qs = personnel_qs.filter(user__branch=user_branch)
+            users_qs = users_qs.filter(branch=user_branch)
+
+        total_personnel = personnel_qs.count()
+        total_users = users_qs.count()
         
         # Surveillance events
-        events_today = SurveillanceEvent.objects.filter(created_at__gte=today_start).count()
-        events_this_week = SurveillanceEvent.objects.filter(created_at__gte=week_ago).count()
+        events_qs = SurveillanceEvent.objects.all()
+        if scoped:
+            events_qs = events_qs.filter(camera_id__branch=user_branch)
+        events_today = events_qs.filter(created_at__gte=today_start).count()
+        events_this_week = events_qs.filter(created_at__gte=week_ago).count()
         
         data = {
             'cameras': {
@@ -136,6 +160,9 @@ class AlertsStatsView(views.APIView):
         
         # Alerts over time
         alerts = Alert.objects.filter(timestamp__gte=time_threshold)
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            alerts = alerts.filter(camera_id__branch=user_branch)
         
         # By type
         alerts_by_type = alerts.values('alert_type').annotate(count=Count('id')).order_by('-count')
@@ -192,6 +219,9 @@ class IncidentsStatsView(views.APIView):
         time_threshold = timezone.now() - timedelta(days=days)
         
         incidents = Incident.objects.filter(created_at__gte=time_threshold)
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            incidents = incidents.filter(alert_id__camera_id__branch=user_branch)
         
         # By status
         incidents_by_status = incidents.values('status').annotate(count=Count('id'))
@@ -242,6 +272,9 @@ class CamerasStatsView(views.APIView):
     def get(self, request):
         """Get camera statistics"""
         cameras = Camera.objects.all()
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            cameras = cameras.filter(branch=user_branch)
         
         # By status
         cameras_by_status = cameras.values('status').annotate(count=Count('id'))
@@ -287,19 +320,27 @@ class RecentActivityView(views.APIView):
     def get(self, request):
         """Get recent activity across all modules"""
         limit = int(request.query_params.get('limit', 20))
+
+        user_branch = getattr(request.user, "branch", None)
+        scoped = getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None
         
         # Recent alerts
-        recent_alerts = Alert.objects.select_related('camera_id').order_by('-timestamp')[:limit]
+        recent_alerts = Alert.objects.select_related('camera_id').order_by('-timestamp')
+        if scoped:
+            recent_alerts = recent_alerts.filter(camera_id__branch=user_branch)
+        recent_alerts = recent_alerts[:limit]
         
         # Recent incidents
-        recent_incidents = Incident.objects.select_related(
-            'alert_id', 'assigned_to'
-        ).order_by('-created_at')[:limit]
+        recent_incidents = Incident.objects.select_related('alert_id', 'assigned_to').order_by('-created_at')
+        if scoped:
+            recent_incidents = recent_incidents.filter(alert_id__camera_id__branch=user_branch)
+        recent_incidents = recent_incidents[:limit]
         
         # Recent surveillance events
-        recent_events = SurveillanceEvent.objects.select_related(
-            'camera_id'
-        ).order_by('-created_at')[:limit]
+        recent_events = SurveillanceEvent.objects.select_related('camera_id').order_by('-created_at')
+        if scoped:
+            recent_events = recent_events.filter(camera_id__branch=user_branch)
+        recent_events = recent_events[:limit]
         
         alerts_data = []
         for alert in recent_alerts:
@@ -372,14 +413,23 @@ class RealTimeAnalyticsView(views.APIView):
         OPTIMIZED: Uses cached camera status (updated by periodic feed checker every 5 seconds).
         """
         now = timezone.now()
+
+        user_branch = getattr(request.user, "branch", None)
+        scoped = getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None
         
         # Active alerts count
-        active_alerts = Alert.objects.filter(status='ACTIVE').count()
+        active_alerts_qs = Alert.objects.filter(status='ACTIVE')
+        if scoped:
+            active_alerts_qs = active_alerts_qs.filter(camera_id__branch=user_branch)
+        active_alerts = active_alerts_qs.count()
         
         # System health calculation based on feed-driven camera status
         # Status is updated by periodic feed checks (every 5 seconds via management command)
-        total_cameras = Camera.objects.count()
-        online_cameras = Camera.objects.filter(status='ONLINE').count()
+        cameras_qs = Camera.objects.all()
+        if scoped:
+            cameras_qs = cameras_qs.filter(branch=user_branch)
+        total_cameras = cameras_qs.count()
+        online_cameras = cameras_qs.filter(status='ONLINE').count()
         offline_cameras = total_cameras - online_cameras
         
         # Classify system health based on online camera ratio (5-level system)
@@ -410,6 +460,8 @@ class RealTimeAnalyticsView(views.APIView):
         # Status is updated by periodic feed checker (every 5 seconds via management command)
         # This view simply reads the current status - no status modification here
         cameras = Camera.objects.only('id', 'name', 'location', 'zone', 'status', 'last_feed_timestamp').all()
+        if scoped:
+            cameras = cameras.filter(branch=user_branch)
         camera_feeds = []
         for camera in cameras:
             camera_feeds.append({
@@ -463,6 +515,9 @@ class HistoricalAlertReportingView(views.APIView):
         # Get all alerts in the period (ONLY alerts, not incidents)
         # Alerts come from cameras and AI models
         alerts = Alert.objects.filter(timestamp__gte=start_date).select_related('camera_id')
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            alerts = alerts.filter(camera_id__branch=user_branch)
         
         # Aggregate based on period
         if period == 'daily':
@@ -605,6 +660,9 @@ class IncidentReportExportView(views.APIView):
         incidents = Incident.objects.filter(created_at__gte=start_date).select_related(
             'alert_id', 'alert_id__camera_id', 'assigned_to'
         )
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            incidents = incidents.filter(alert_id__camera_id__branch=user_branch)
         
         if export_format == 'csv':
             return self._export_csv(incidents, period, days, now)
@@ -794,6 +852,9 @@ class AlertReportExportView(views.APIView):
         now = timezone.now()
         start_date = now - timedelta(days=days)
         alerts = Alert.objects.filter(timestamp__gte=start_date).select_related('camera_id')
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            alerts = alerts.filter(camera_id__branch=user_branch)
         
         if export_type == 'csv':
             return self._export_csv(alerts, period, days, now)

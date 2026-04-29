@@ -65,7 +65,14 @@ axiosInstance.interceptors.response.use(
         localStorage.clear();
         // Use window.location only if we're not already on a public route
         const currentPath = window.location.pathname;
-        if (currentPath !== '/' && currentPath !== '/login' && !currentPath.startsWith('/forgot-password') && !currentPath.startsWith('/reset-password')) {
+        if (
+          currentPath !== '/' &&
+          currentPath !== '/login' &&
+          !currentPath.startsWith('/forgot-password') &&
+          !currentPath.startsWith('/reset-password') &&
+          currentPath !== '/create-super-admin' &&
+          currentPath !== '/register-branch'
+        ) {
           window.location.href = '/login';
         }
         return Promise.reject(error);
@@ -94,7 +101,14 @@ axiosInstance.interceptors.response.use(
         localStorage.clear();
         // Use window.location only if we're not already on a public route
         const currentPath = window.location.pathname;
-        if (currentPath !== '/' && currentPath !== '/login' && !currentPath.startsWith('/forgot-password') && !currentPath.startsWith('/reset-password')) {
+        if (
+          currentPath !== '/' &&
+          currentPath !== '/login' &&
+          !currentPath.startsWith('/forgot-password') &&
+          !currentPath.startsWith('/reset-password') &&
+          currentPath !== '/create-super-admin' &&
+          currentPath !== '/register-branch'
+        ) {
           window.location.href = '/login';
         }
         return Promise.reject(err);

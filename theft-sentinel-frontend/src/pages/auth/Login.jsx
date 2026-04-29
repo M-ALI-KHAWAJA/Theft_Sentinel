@@ -20,6 +20,7 @@ const Login = () => {
   const [loading, setLoading] = useState(false);
   const [showPassword, setShowPassword] = useState(false);
   const [focusedField, setFocusedField] = useState(null);
+  const [showResetOptions, setShowResetOptions] = useState(false);
 
   const handleChange = (e) => {
     setFormData({
@@ -179,15 +180,38 @@ const Login = () => {
               </div>
             </div>
 
-            {/* Forgot Password Link */}
-            <div className="flex justify-end">
+            {/* Password Reset */}
+            <div className="space-y-2">
               <button
                 type="button"
-                onClick={() => navigate('/forgot-password')}
-                className="text-sm text-ai-blue hover:text-ai-blueDark transition-colors"
+                onClick={() => setShowResetOptions((value) => !value)}
+                className="w-full text-sm px-4 py-2 glass border border-dark-border rounded-lg text-ai-blue hover:bg-dark-card transition-colors"
               >
                 Forgot Password?
               </button>
+              {showResetOptions && (
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 animate-fadeIn">
+                  <button
+                    type="button"
+                    onClick={() => navigate('/forgot-password/super-admin')}
+                    className="text-left text-sm px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-dark-text-primary hover:border-ai-blue hover:text-ai-blue transition-colors"
+                  >
+                    <span className="block font-semibold">Super Admin Password Reset</span>
+                    <span className="block text-xs text-dark-text-muted mt-1">Receive a direct reset link.</span>
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => navigate('/forgot-password/branch-admin')}
+                    className="text-left text-sm px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-dark-text-primary hover:border-ai-blue hover:text-ai-blue transition-colors"
+                  >
+                    <span className="block font-semibold">Branch Admin Password Reset</span>
+                    <span className="block text-xs text-dark-text-muted mt-1">Request Super Admin approval.</span>
+                  </button>
+                </div>
+              )}
+              <p className="text-xs text-dark-text-muted">
+                Security Guard / Security In-Charge: contact your Branch Admin for password reset.
+              </p>
             </div>
 
             {/* Submit Button */}

@@ -20,6 +20,8 @@ urlpatterns = [
     path('api/incidents/', include('apps.incidents.urls')),
     path('api/dashboard/', include('apps.dashboard.urls')),
     path('api/feedback/', include('apps.feedback.urls')),
+    path('api/tenancy/', include('apps.tenancy.urls')),
+    path('api/support/', include('apps.support.urls')),
     
     # AI Engine endpoints (NEW - ISOLATED)
     path('api/ai/', include('apps.ai_engine.api.urls')),

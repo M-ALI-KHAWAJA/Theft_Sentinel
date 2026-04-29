@@ -42,6 +42,11 @@ class IncidentListCreateView(generics.ListCreateAPIView):
     
     def get_queryset(self):
         queryset = Incident.objects.select_related('alert_id', 'assigned_to', 'assigned_by').all()
+
+        # Branch scoping (via incident -> alert -> camera)
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            queryset = queryset.filter(alert_id__camera_id__branch=user_branch)
         
         # Security Guard: Only view incidents assigned to them
         if self.request.user.role == 'SECURITY_GUARD':
@@ -94,6 +99,11 @@ class IncidentDetailView(generics.RetrieveUpdateDestroyAPIView):
     
     def get_queryset(self):
         queryset = Incident.objects.select_related('alert_id', 'assigned_to', 'assigned_by').all()
+
+        # Branch scoping
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            queryset = queryset.filter(alert_id__camera_id__branch=user_branch)
         
         # Security Guard: Only view incidents assigned to them
         if self.request.user.role == 'SECURITY_GUARD':
@@ -164,6 +174,12 @@ class IncidentStatusUpdateView(views.APIView):
                 {'error': 'Incident not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            cam_branch = getattr(getattr(getattr(incident, "alert_id", None), "camera_id", None), "branch", None)
+            if cam_branch is not None and cam_branch != user_branch:
+                return Response({'error': 'Incident not found'}, status=status.HTTP_404_NOT_FOUND)
         
         # Security Guard can only update incidents assigned to them
         if request.user.role == 'SECURITY_GUARD':
@@ -202,6 +218,12 @@ class IncidentAssignView(views.APIView):
                 {'error': 'Incident not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            cam_branch = getattr(getattr(getattr(incident, "alert_id", None), "camera_id", None), "branch", None)
+            if cam_branch is not None and cam_branch != user_branch:
+                return Response({'error': 'Incident not found'}, status=status.HTTP_404_NOT_FOUND)
         
         serializer = IncidentAssignSerializer(data=request.data)
         if serializer.is_valid():
@@ -236,9 +258,13 @@ class MyIncidentsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        return Incident.objects.select_related('alert_id', 'assigned_to', 'assigned_by').filter(
+        qs = Incident.objects.select_related('alert_id', 'assigned_to', 'assigned_by').filter(
             assigned_to=self.request.user
-        ).order_by('-created_at')
+        )
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            qs = qs.filter(alert_id__camera_id__branch=user_branch)
+        return qs.order_by('-created_at')
 
 
 class UnassignedIncidentsView(generics.ListAPIView):
@@ -253,6 +279,10 @@ class UnassignedIncidentsView(generics.ListAPIView):
     permission_classes = [IsAuthenticated, IsAdminOrIncharge]
     
     def get_queryset(self):
-        return Incident.objects.select_related('alert_id', 'assigned_by').filter(
+        qs = Incident.objects.select_related('alert_id', 'assigned_by').filter(
             assigned_to__isnull=True
-        ).order_by('-created_at')
+        )
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            qs = qs.filter(alert_id__camera_id__branch=user_branch)
+        return qs.order_by('-created_at')

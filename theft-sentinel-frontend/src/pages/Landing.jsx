@@ -2,6 +2,7 @@
 
 import { useNavigate } from 'react-router-dom';
 import { useEffect, useState } from 'react';
+import { superAdminExists } from '../api/tenancy';
 import { 
   CpuChipIcon, 
   VideoCameraIcon, 
@@ -23,6 +24,7 @@ const Landing = () => {
   const [isIOS, setIsIOS] = useState(false);
   const [isMobile, setIsMobile] = useState(false);
   const [isStandalone, setIsStandalone] = useState(false);
+  const [showCreateSuperAdmin, setShowCreateSuperAdmin] = useState(false);
 
   useEffect(() => {
     // Check if app is already installed (standalone mode)
@@ -81,6 +83,18 @@ const Landing = () => {
       if (fallbackTimer) clearTimeout(fallbackTimer);
       window.removeEventListener('beforeinstallprompt', handleBeforeInstallPrompt);
     };
+  }, []);
+
+  useEffect(() => {
+    const check = async () => {
+      try {
+        const res = await superAdminExists();
+        setShowCreateSuperAdmin(!res.data?.exists);
+      } catch {
+        setShowCreateSuperAdmin(false);
+      }
+    };
+    check();
   }, []);
 
   const handleInstall = async () => {
@@ -178,13 +192,29 @@ const Landing = () => {
                 <ShieldCheckIcon className="h-8 w-8 text-ai-blue" />
                 <span className="font-bold text-xl tracking-tight">Theft<span className="text-ai-blue">Sentinel</span></span>
               </div>
-              <div className="hidden md:block">
-                <button 
-                  onClick={() => navigate('/login')}
-                  className="px-4 py-2 rounded-md bg-ai-blue/10 text-ai-blue hover:bg-ai-blue hover:text-dark-bg transition-all duration-300 font-medium text-sm"
-                >
-                  Login
-                </button>
+              <div className="flex items-center gap-2 sm:gap-3">
+                <div className="flex items-center gap-2 sm:gap-3">
+                  {showCreateSuperAdmin && (
+                    <button
+                      onClick={() => navigate('/create-super-admin')}
+                      className="hidden sm:inline-flex px-4 py-2 rounded-md glass border border-white/20 text-white hover:border-ai-blue transition-all duration-300 font-medium text-sm"
+                    >
+                      Create Super Admin
+                    </button>
+                  )}
+                  <button
+                    onClick={() => navigate('/register-branch')}
+                    className="px-3 sm:px-4 py-2 rounded-md glass border border-ai-blue/40 text-ai-blue hover:bg-ai-blue hover:text-dark-bg transition-all duration-300 font-medium text-xs sm:text-sm"
+                  >
+                    Register Branch
+                  </button>
+                  <button 
+                    onClick={() => navigate('/login')}
+                    className="px-3 sm:px-4 py-2 rounded-md bg-ai-blue/10 text-ai-blue hover:bg-ai-blue hover:text-dark-bg transition-all duration-300 font-medium text-xs sm:text-sm"
+                  >
+                    Login
+                  </button>
+                </div>
               </div>
             </div>
           </div>
@@ -505,7 +535,7 @@ const Landing = () => {
               Experience the future of intelligent surveillance and theft prevention.
             </p>
             <button
-              onClick={() => navigate('/login')}
+              onClick={() => navigate('/register-branch')}
               className="group relative px-12 py-5 bg-ai-blue text-dark-bg font-bold text-lg rounded-full overflow-hidden
                        hover:bg-cyan-400 transition-all duration-300 shadow-[0_0_30px_rgba(0,212,255,0.4)]
                        transform hover:scale-105"

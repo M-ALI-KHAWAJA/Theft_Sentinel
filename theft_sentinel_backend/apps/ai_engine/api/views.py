@@ -110,6 +110,14 @@ class AnalyzeFrameView(views.APIView):
                     {'error': f'Camera not found: {camera_id}'},
                     status=status.HTTP_404_NOT_FOUND
                 )
+            user_branch = getattr(request.user, "branch", None)
+            if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+                cam_branch = getattr(camera, "branch", None)
+                if cam_branch is not None and cam_branch != user_branch:
+                    return Response(
+                        {'error': f'Camera not found: {camera_id}'},
+                        status=status.HTTP_404_NOT_FOUND
+                    )
         
         # Run inference
         try:
@@ -281,6 +289,15 @@ class ProcessCameraView(views.APIView):
                 {'error': f'Camera not found: {camera_id}'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            cam_branch = getattr(camera, "branch", None)
+            if cam_branch is not None and cam_branch != user_branch:
+                return Response(
+                    {'error': f'Camera not found: {camera_id}'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
         
         # Capture frame from RTSP
         logger.info(f"Capturing frame from camera {camera.name} (ID: {camera_id})")
@@ -531,6 +548,15 @@ class StartContinuousMonitorView(views.APIView):
                 {'error': f'Camera not found: {camera_id}'},
                 status=status.HTTP_404_NOT_FOUND
             )
+
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            cam_branch = getattr(camera, "branch", None)
+            if cam_branch is not None and cam_branch != user_branch:
+                return Response(
+                    {'error': f'Camera not found: {camera_id}'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
         
         # Check if AI is ready
         if not ai_service.is_ready():
@@ -610,6 +636,12 @@ class StopContinuousMonitorView(views.APIView):
         # was actually running (handles double-stop gracefully) ─────────────
         try:
             cam = Camera.objects.get(pk=camera_id)
+            user_branch = getattr(request.user, "branch", None)
+            if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+                cam_branch = getattr(cam, "branch", None)
+                if cam_branch is not None and cam_branch != user_branch:
+                    cam = None
+                    raise Camera.DoesNotExist()
             cam.ai_monitoring_enabled = False
             cam.save(update_fields=['ai_monitoring_enabled'])
         except Camera.DoesNotExist:
@@ -669,6 +701,11 @@ class MonitorStatusView(views.APIView):
             ai_monitoring_enabled = False
             try:
                 cam = Camera.objects.get(pk=camera_id)
+                user_branch = getattr(request.user, "branch", None)
+                if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+                    cam_branch = getattr(cam, "branch", None)
+                    if cam_branch is not None and cam_branch != user_branch:
+                        raise Camera.DoesNotExist()
                 ai_monitoring_enabled = bool(cam.ai_monitoring_enabled)
             except Camera.DoesNotExist:
                 return Response(
