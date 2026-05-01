@@ -105,7 +105,7 @@ const Login = () => {
 
           {/* Login Form */}
           <form className="space-y-6" onSubmit={handleSubmit}>
-            {/* Username Field */}
+            {/* Email / Username Field */}
             <div className="space-y-2">
               <label 
                 htmlFor="username" 
@@ -113,7 +113,7 @@ const Login = () => {
                   focusedField === 'username' ? 'text-ai-blue' : 'text-dark-text-secondary'
                 }`}
               >
-                Username
+                Email or Username
               </label>
               <div className="relative">
                 <input
@@ -129,7 +129,7 @@ const Login = () => {
                            text-dark-text-primary placeholder-dark-text-muted
                            focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent
                            transition-all duration-200"
-                  placeholder="Enter your username"
+                  placeholder="Email or Username"
                 />
                 {focusedField === 'username' && (
                   <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-gradient-to-r from-ai-blue to-ai-purple animate-slideIn" />

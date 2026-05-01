@@ -3,6 +3,24 @@ import { useNavigate } from 'react-router-dom';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
 import { createSuperAdmin, superAdminExists } from '../../api/tenancy';
+import { validateUsername } from '../../utils/validation';
+
+const formatApiError = (data) => {
+  if (!data) return 'Failed to create Super Admin.';
+  if (typeof data === 'string') return data;
+  if (data.error || data.message || data.detail) return data.error || data.message || data.detail;
+
+  if (typeof data === 'object') {
+    const messages = Object.entries(data).flatMap(([field, value]) => {
+      const label = field.replace(/_/g, ' ');
+      const values = Array.isArray(value) ? value : [value];
+      return values.map((item) => `${label}: ${item}`);
+    });
+    if (messages.length > 0) return messages.join('\n');
+  }
+
+  return 'Failed to create Super Admin.';
+};
 
 const CreateSuperAdmin = () => {
   const navigate = useNavigate();
@@ -14,6 +32,7 @@ const CreateSuperAdmin = () => {
 
   const [formData, setFormData] = useState({
     full_name: '',
+    username: '',
     email: '',
     phone_number: '',
     password: '',
@@ -61,14 +80,27 @@ const CreateSuperAdmin = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    const usernameCheck = validateUsername(formData.username);
+    if (!usernameCheck.valid) {
+      showError(usernameCheck.message);
+      return;
+    }
+
     setLoading(true);
     try {
-      await createSuperAdmin(formData);
+      const payload = Object.fromEntries(
+        Object.entries(formData).map(([key, value]) => [
+          key,
+          key !== 'password' && typeof value === 'string' ? value.trim() : value,
+        ])
+      );
+
+      await createSuperAdmin(payload);
       showSuccess('Super Admin created. You can now log in.');
       setTimeout(() => navigate('/login'), 1500);
     } catch (err) {
-      const msg = err.response?.data?.error || err.response?.data?.message || 'Failed to create Super Admin.';
-      showError(msg);
+      showError(formatApiError(err.response?.data));
     } finally {
       setLoading(false);
     }
@@ -136,6 +168,16 @@ const CreateSuperAdmin = () => {
                 name="email"
                 type="email"
                 value={formData.email}
+                onChange={handleChange}
+                required
+                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-dark-text-secondary mb-1">Username</label>
+              <input
+                name="username"
+                value={formData.username}
                 onChange={handleChange}
                 required
                 className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"

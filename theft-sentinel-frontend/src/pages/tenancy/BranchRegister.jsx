@@ -3,7 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
 import { registerBranch } from '../../api/tenancy';
-import { validatePassword } from '../../utils/validation';
+import { validatePassword, validateUsername } from '../../utils/validation';
 
 const formatApiError = (data) => {
   if (!data) return 'Registration failed.';
@@ -33,6 +33,7 @@ const BranchRegister = () => {
     company_name: '',
     branch_name: '',
     admin_name: '',
+    username: '',
     cnic: '',
     email: '',
     phone_number: '',
@@ -44,6 +45,12 @@ const BranchRegister = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+
+    const usernameCheck = validateUsername(formData.username);
+    if (!usernameCheck.valid) {
+      showError(usernameCheck.message);
+      return;
+    }
 
     const passwordCheck = validatePassword(formData.password);
     if (!passwordCheck.valid) {
@@ -105,6 +112,16 @@ const BranchRegister = () => {
               <input
                 name="admin_name"
                 value={formData.admin_name}
+                onChange={handleChange}
+                required
+                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+              />
+            </div>
+            <div>
+              <label className="block text-sm text-dark-text-secondary mb-1">Username</label>
+              <input
+                name="username"
+                value={formData.username}
                 onChange={handleChange}
                 required
                 className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"

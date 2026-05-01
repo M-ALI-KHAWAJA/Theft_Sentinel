@@ -1,3 +1,5 @@
+import re
+
 from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
@@ -5,6 +7,18 @@ from apps.accounts.serializers import validate_password_strength
 from .models import Tenant, Branch, SuperAdminProfile, BranchPasswordResetRequest
 
 User = get_user_model()
+USERNAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{2,29}$")
+
+
+def validate_username_format(value):
+    value = (value or "").strip()
+    if not value:
+        raise serializers.ValidationError("Username is required.")
+    if not USERNAME_PATTERN.match(value):
+        raise serializers.ValidationError(
+            "Username must be 3-30 characters, start with a letter, and contain only letters, numbers, and underscores."
+        )
+    return value
 
 
 class SuperAdminExistsSerializer(serializers.Serializer):
@@ -13,6 +27,7 @@ class SuperAdminExistsSerializer(serializers.Serializer):
 
 class SuperAdminCreateSerializer(serializers.Serializer):
     full_name = serializers.CharField(max_length=255)
+    username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
     phone_number = serializers.CharField(max_length=30, allow_blank=True, required=False)
     password = serializers.CharField(write_only=True, min_length=8)
@@ -34,6 +49,17 @@ class SuperAdminCreateSerializer(serializers.Serializer):
         validate_password_strength(value)
         return value
 
+    def validate_username(self, value):
+        value = validate_username_format(value)
+        if User.objects.filter(username=value, branch__isnull=True).exists():
+            raise serializers.ValidationError("Username already exists.")
+        return value
+
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Email already exists.")
+        return value
+
     def validate(self, attrs):
         count = attrs.get("partners_count", 0)
         names = attrs.get("partner_names") or []
@@ -49,6 +75,7 @@ class TenantBranchRegistrationSerializer(serializers.Serializer):
     company_name = serializers.CharField(max_length=255)
     branch_name = serializers.CharField(max_length=255)
     admin_name = serializers.CharField(max_length=255)
+    username = serializers.CharField(max_length=150)
     cnic = serializers.CharField(max_length=30)
     email = serializers.EmailField()
     phone_number = serializers.CharField(max_length=30)
@@ -58,6 +85,9 @@ class TenantBranchRegistrationSerializer(serializers.Serializer):
     def validate_password(self, value):
         validate_password_strength(value)
         return value
+
+    def validate_username(self, value):
+        return validate_username_format(value)
 
     def validate_email(self, value):
         if User.objects.filter(email=value).exists():
