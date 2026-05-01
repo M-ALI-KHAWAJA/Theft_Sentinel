@@ -31,6 +31,11 @@ class CameraListCreateView(generics.ListCreateAPIView):
     
     def get_queryset(self):
         queryset = Camera.objects.all()
+
+        # Branch scoping (single DB, tenant isolation)
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            queryset = queryset.filter(branch=user_branch)
         
         # Filter by zone
         zone = self.request.query_params.get('zone', None)
@@ -44,6 +49,14 @@ class CameraListCreateView(generics.ListCreateAPIView):
         
         return queryset.order_by('-created_at')
 
+    def perform_create(self, serializer):
+        # Ensure camera is linked to creator's branch (Super Admin may omit)
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            serializer.save(branch=user_branch)
+            return
+        serializer.save()
+
 
 class CameraDetailView(generics.RetrieveUpdateDestroyAPIView):
     """
@@ -54,6 +67,13 @@ class CameraDetailView(generics.RetrieveUpdateDestroyAPIView):
     queryset = Camera.objects.all()
     serializer_class = CameraSerializer
     permission_classes = [IsAuthenticated, CanManageCameras]
+
+    def get_queryset(self):
+        qs = Camera.objects.all()
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            qs = qs.filter(branch=user_branch)
+        return qs
 
 
 class CameraStatusUpdateView(views.APIView):

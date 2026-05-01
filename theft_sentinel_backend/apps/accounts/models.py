@@ -18,6 +18,17 @@ class UserManager(BaseUserManager):
             raise ValueError('Email is required')
         
         email = self.normalize_email(email)
+
+        # Branch-scoped username uniqueness (global uniqueness removed for multi-tenancy).
+        branch = extra_fields.get("branch", None)
+        if branch is not None:
+            if self.model.objects.filter(username=username, branch=branch).exists():
+                raise ValueError("Username already exists in this branch")
+        else:
+            # Legacy / Super Admin: enforce uniqueness in the NULL-branch namespace
+            if self.model.objects.filter(username=username, branch__isnull=True).exists():
+                raise ValueError("Username already exists")
+
         user = self.model(username=username, email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
@@ -36,23 +47,34 @@ class User(AbstractBaseUser, PermissionsMixin):
     """Custom User Model with role-based access"""
     
     ROLE_CHOICES = [
+        ('SUPER_ADMIN', 'Super Administrator'),
         ('ADMIN', 'Administrator'),
         ('SECURITY_INCHARGE', 'Security In-Charge'),
         ('SECURITY_GUARD', 'Security Guard'),
     ]
     
     id = ObjectIdAutoField(primary_key=True)
-    username = models.CharField(max_length=150, unique=True, db_index=True)
+    # Username must be unique within a branch (not globally).
+    # Legacy single-tenant rows may have branch=NULL; these remain valid.
+    username = models.CharField(max_length=150, db_index=True)
     email = models.EmailField(max_length=255, unique=True, db_index=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='SECURITY_GUARD')
+    branch = models.ForeignKey(
+        "tenancy.Branch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="users",
+        db_index=True,
+    )
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
     created_at = models.DateTimeField(default=timezone.now)
     
     objects = UserManager()
     
-    USERNAME_FIELD = 'username'
-    REQUIRED_FIELDS = ['email']
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['username']
     
     class Meta:
         db_table = 'accounts_user'
@@ -62,6 +84,10 @@ class User(AbstractBaseUser, PermissionsMixin):
     def __str__(self):
         return f"{self.username} ({self.role})"
     
+    @property
+    def is_super_admin(self):
+        return self.role == 'SUPER_ADMIN'
+
     @property
     def is_admin(self):
         return self.role == 'ADMIN'

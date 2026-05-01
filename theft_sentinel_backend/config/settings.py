@@ -48,6 +48,8 @@ INSTALLED_APPS = [
     'apps.dashboard',
     'apps.feedback',
     'apps.ai_engine',
+    'apps.tenancy',
+    'apps.support',
 ]
 
 MIDDLEWARE = [

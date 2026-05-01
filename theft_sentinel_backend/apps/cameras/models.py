@@ -15,6 +15,14 @@ class Camera(models.Model):
     ]
     
     id = ObjectIdAutoField(primary_key=True)
+    branch = models.ForeignKey(
+        "tenancy.Branch",
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name="cameras",
+        db_index=True,
+    )
     name = models.CharField(max_length=255)
     rtsp_url = models.CharField(max_length=512)
     location = models.CharField(max_length=255)

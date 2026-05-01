@@ -37,6 +37,11 @@ class AlertListCreateView(generics.ListCreateAPIView):
     
     def get_queryset(self):
         queryset = Alert.objects.select_related('camera_id').all()
+
+        # Branch scoping
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            queryset = queryset.filter(camera_id__branch=user_branch)
         
         # Security Guard: Only view recent alerts (last 24 hours - real-time alerts)
         # Cannot view alert history
@@ -99,6 +104,11 @@ class AlertDetailView(generics.RetrieveUpdateDestroyAPIView):
     
     def get_queryset(self):
         queryset = Alert.objects.select_related('camera_id').all()
+
+        # Branch scoping
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            queryset = queryset.filter(camera_id__branch=user_branch)
         
         # Security Guard: Only view recent alerts (last 24 hours)
         if self.request.user.role == 'SECURITY_GUARD':

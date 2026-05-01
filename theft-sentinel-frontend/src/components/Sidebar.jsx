@@ -53,6 +53,12 @@ const Sidebar = () => {
   };
 
   const menuItems = {
+    SUPER_ADMIN: [
+      { name: 'Branches', path: '/super-admin/branches', icon: UsersIcon },
+      { name: 'Reset Requests', path: '/super-admin/reset-requests', icon: ChatBubbleLeftIcon },
+      { name: 'Queries', path: '/super-admin/queries', icon: BellAlertIcon },
+      { name: 'Profile', path: '/super-admin/profile', icon: HomeIcon },
+    ],
     ADMIN: [
       { name: 'Dashboard', path: '/dashboard', icon: HomeIcon },
       { name: 'Historical Reporting', path: '/dashboard/historical-reporting', icon: ChartBarIcon },
@@ -62,6 +68,8 @@ const Sidebar = () => {
       { name: 'AI Dashboard', path: '/ai/dashboard', icon: CpuChipIcon },
       { name: 'Feedback', path: '/feedback', icon: ChatBubbleLeftIcon },
       { name: 'Personnel', path: '/personnel', icon: UsersIcon },
+      { name: 'Support', path: '/support/queries', icon: ChatBubbleLeftIcon },
+      { name: 'Profile', path: '/profile', icon: HomeIcon },
     ],
     SECURITY_INCHARGE: [
       { name: 'Dashboard', path: '/dashboard', icon: HomeIcon },
@@ -70,6 +78,8 @@ const Sidebar = () => {
       { name: 'Incidents', path: '/incidents', icon: ExclamationTriangleIcon },
       { name: 'Control Room', path: '/cameras/control-room', icon: VideoCameraIcon },
       { name: 'AI Dashboard', path: '/ai/dashboard', icon: CpuChipIcon },
+      { name: 'Support', path: '/support/queries', icon: ChatBubbleLeftIcon },
+      { name: 'Profile', path: '/profile', icon: HomeIcon },
     ],
     SECURITY_GUARD: [
       { name: 'Dashboard', path: '/dashboard/guard', icon: HomeIcon },
@@ -77,6 +87,8 @@ const Sidebar = () => {
       { name: 'Alerts', path: '/alerts/guard', icon: BellAlertIcon },
       { name: 'My Incidents', path: '/incidents/my', icon: ExclamationTriangleIcon },
       { name: 'Feedback', path: '/feedback/my', icon: ChatBubbleLeftIcon },
+      { name: 'Support', path: '/support/queries', icon: ChatBubbleLeftIcon },
+      { name: 'Profile', path: '/profile', icon: HomeIcon },
     ],
   };
 

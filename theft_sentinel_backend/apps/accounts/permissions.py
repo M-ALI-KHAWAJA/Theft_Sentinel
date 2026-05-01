@@ -41,6 +41,13 @@ RBAC Model:
 from rest_framework import permissions
 
 
+class IsSuperAdmin(permissions.BasePermission):
+    """Permission class for Super Admin users only"""
+
+    def has_permission(self, request, view):
+        return request.user and request.user.is_authenticated and request.user.role == "SUPER_ADMIN"
+
+
 class IsAdmin(permissions.BasePermission):
     """Permission class for Admin users only"""
     

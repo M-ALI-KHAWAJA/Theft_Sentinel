@@ -28,6 +28,10 @@ class PersonnelListCreateView(generics.ListCreateAPIView):
     
     def get_queryset(self):
         queryset = Personnel.objects.select_related('user').all()
+
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            queryset = queryset.filter(user__branch=user_branch)
         
         # Filter by zone if provided
         zone = self.request.query_params.get('zone', None)
@@ -61,7 +65,11 @@ class PersonnelDetailView(generics.RetrieveUpdateDestroyAPIView):
     permission_classes = [IsAuthenticated]
     
     def get_queryset(self):
-        return Personnel.objects.select_related('user').all()
+        qs = Personnel.objects.select_related('user').all()
+        user_branch = getattr(self.request.user, "branch", None)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            qs = qs.filter(user__branch=user_branch)
+        return qs
     
     def update(self, request, *args, **kwargs):
         """
