@@ -254,8 +254,20 @@ class ContinuousMonitor:
                 if result.get('tracks'):
                     self._save_tracking_data(result)
                 
-            except Exception as e:
-                logger.error(f"Error in monitoring loop: {str(e)}", exc_info=True)
+            except BaseException as e:
+                # Catch BaseException (not just Exception) to also catch
+                # SystemError / MemoryError raised by C extensions (PyTorch,
+                # FAISS, OpenCV).  On a fatal error we stop the loop cleanly
+                # rather than retrying into an already-broken CUDA context.
+                is_fatal = not isinstance(e, Exception)  # KeyboardInterrupt etc.
+                logger.error(
+                    f"💥 {'FATAL' if is_fatal else 'Error'} in monitor loop "
+                    f"for camera {self.camera_id}: {type(e).__name__}: {e}",
+                    exc_info=True,
+                )
+                if is_fatal:
+                    self.is_running = False  # signal watchdog that we died
+                    break                    # exit instead of retrying
                 time.sleep(0.5)
         
         logger.info(f"Monitoring loop ended for camera {self.camera_id}")
@@ -445,11 +457,54 @@ class MonitorManager:
     def __init__(self):
         if self._initialized:
             return
-        
+
         self.monitors: Dict[str, ContinuousMonitor] = {}
         self._initialized = True
-        logger.info("📹 MonitorManager initialized")
-    
+
+        # Watchdog: checks every 30 s whether inference threads are still alive
+        # and auto-restarts any that died without being explicitly stopped.
+        self._watchdog_thread = threading.Thread(
+            target=self._watchdog_loop, daemon=True, name="monitor-watchdog"
+        )
+        self._watchdog_thread.start()
+        logger.info("📹 MonitorManager initialized (watchdog active)")
+
+    def _watchdog_loop(self):
+        """
+        Daemon thread — checks every 30 s whether each monitor's inference
+        thread is still alive.  If a thread died without being explicitly
+        stopped (i.e. is_running is still True but thread.is_alive() is False),
+        the watchdog removes the dead entry and restarts the monitor so the
+        camera resumes monitoring automatically after a crash.
+        """
+        while True:
+            time.sleep(30)
+            for camera_id, monitor in list(self.monitors.items()):
+                thread_alive = (
+                    monitor.thread is not None and monitor.thread.is_alive()
+                )
+                if monitor.is_running and not thread_alive:
+                    logger.error(
+                        "🔴 WATCHDOG: inference thread for camera %s died "
+                        "unexpectedly — restarting …", camera_id
+                    )
+                    # Clean up the dead entry first
+                    monitor.is_running = False
+                    rtsp_url   = monitor.rtsp_url
+                    callback   = monitor.callback
+                    self.monitors.pop(camera_id, None)
+                    # Re-start (stagger is built into start_monitor)
+                    try:
+                        self.start_monitor(camera_id, rtsp_url, callback)
+                        logger.info(
+                            "✅ WATCHDOG: restarted monitor for camera %s", camera_id
+                        )
+                    except Exception as restart_err:
+                        logger.error(
+                            "❌ WATCHDOG: failed to restart camera %s: %s",
+                            camera_id, restart_err, exc_info=True
+                        )
+
     def start_monitor(self, camera_id: str, rtsp_url: str, callback=None) -> bool:
         """Start monitoring a camera.
 
@@ -461,6 +516,17 @@ class MonitorManager:
         if camera_id in self.monitors:
             logger.warning(f"Monitor already exists for camera {camera_id}")
             return False
+
+        # Stagger: when another monitor is already running, wait 3 s before
+        # starting so the two CUDA warmup passes never overlap.  Simultaneous
+        # warmups (YOLO + OSNet) can spike VRAM above the physical limit and
+        # trigger a C-level abort() before the 85 % cap takes effect.
+        if self.monitors:
+            logger.info(
+                f"⏳ Staggering monitor start for camera {camera_id} "
+                f"({len(self.monitors)} monitor(s) already active — waiting 3 s) …"
+            )
+            time.sleep(3)
 
         from .sse_registry import sse_registry
 

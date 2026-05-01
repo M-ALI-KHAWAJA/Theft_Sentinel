@@ -140,7 +140,11 @@ class AIService:
             if torch.cuda.is_available():
                 self.device = "cuda:0"
                 torch.backends.cudnn.benchmark = True
-                logger.info(f"✅ CUDA: {torch.cuda.get_device_name(0)}")
+                # Cap VRAM to 85 % — leaves headroom for CUDA kernel buffers.
+                # Without this, two simultaneous X3D calls can exceed the 6 GB
+                # physical limit and trigger a C-level abort() with no traceback.
+                torch.cuda.set_per_process_memory_fraction(0.85, device=0)
+                logger.info(f"✅ CUDA: {torch.cuda.get_device_name(0)} | VRAM cap: 85 %")
             else:
                 self.device = "cpu"
                 logger.warning("⚠️  CUDA not available — using CPU (slower)")
