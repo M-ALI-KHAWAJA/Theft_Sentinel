@@ -127,7 +127,7 @@ const Overview = () => {
           </div>
           <p className="text-dark-text-muted">Monitor and acknowledge security alerts</p>
         </Link>
-        
+
         <Link
           to="/incidents"
           className="group glass rounded-xl p-6 hover:shadow-glow transition-all duration-300 
@@ -143,9 +143,9 @@ const Overview = () => {
           </div>
           <p className="text-dark-text-muted">Track and resolve security incidents</p>
         </Link>
-        
+
         <Link
-          to="/cameras"
+          to="/cameras/control-room"
           className="group glass rounded-xl p-6 hover:shadow-glow-ai transition-all duration-300 
                    border-l-4 border-ai-blue transform hover:scale-[1.02]"
         >
@@ -177,7 +177,7 @@ const Overview = () => {
             </div>
             <div className="mt-2">
               <div className="h-2 bg-dark-card rounded-full overflow-hidden">
-                <div 
+                <div
                   className="h-full bg-status-success rounded-full transition-all duration-500"
                   style={{ width: `${data?.cameras?.total ? (data.cameras.online / data.cameras.total * 100) : 0}%` }}
                 />

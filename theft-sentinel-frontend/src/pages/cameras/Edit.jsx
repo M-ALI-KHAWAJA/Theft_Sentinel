@@ -31,7 +31,7 @@ const Edit = () => {
       console.error('Error fetching camera:', error);
       showError('Failed to load camera details');
       setTimeout(() => {
-        navigate('/cameras');
+        navigate('/cameras/control-room');
       }, 1500);
     } finally {
       setLoading(false);
@@ -53,7 +53,7 @@ const Edit = () => {
       await updateCamera(id, formData);
       showSuccess('Camera updated successfully');
       setTimeout(() => {
-        navigate('/cameras');
+        navigate('/cameras/control-room');
       }, 1500);
     } catch (error) {
       console.error('Error updating camera:', error);
@@ -75,15 +75,15 @@ const Edit = () => {
         message={modalState.message}
         onClose={hideModal}
       />
-      
+
       <div className="flex items-center space-x-4">
         <button
-          onClick={() => navigate('/cameras')}
+          onClick={() => navigate('/cameras/control-room')}
           className="p-2 hover:bg-dark-card rounded-full transition-colors"
         >
           <ArrowLeftIcon className="h-6 w-6 text-dark-text-secondary" />
         </button>
-        <h1 className="text-3xl font-bold text-white">Control Room</h1>
+        <h1 className="text-3xl font-bold text-white">Edit Camera</h1>
       </div>
 
       <div className="glass rounded-xl border border-dark-border p-6">
@@ -168,7 +168,7 @@ const Edit = () => {
           <div className="flex justify-end space-x-4">
             <button
               type="button"
-              onClick={() => navigate('/cameras')}
+              onClick={() => navigate('/cameras/control-room')}
               className="px-6 py-2 border border-dark-border rounded-md text-dark-text-secondary hover:bg-dark-card transition-colors"
             >
               Cancel
