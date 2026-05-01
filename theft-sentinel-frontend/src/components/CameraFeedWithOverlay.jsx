@@ -124,8 +124,15 @@ const CameraFeedWithOverlay = memo(({
                   }));
               }
           } else if (isKnownThief) {
-              // Diagnostic log to prove the frontend recognizes a returning threat
+              // Notify the Node Graph of this camera visit so the path graph updates
+              // (handles revisits: Cam A → Cam B → Cam A).
+              // The Node Graph deduplicates consecutive same-camera entries itself.
               console.log(`👀 [FRONTEND] RETURNING THIEF RECOGNIZED: ID ${id}`);
+              if (track.global_id != null && cameraName) {
+                  window.dispatchEvent(new CustomEvent('ai-suspect-detected', {
+                      detail: { globalId: track.global_id, cameraName }
+                  }));
+              }
           }
 
           // Latch them for the drawing loop

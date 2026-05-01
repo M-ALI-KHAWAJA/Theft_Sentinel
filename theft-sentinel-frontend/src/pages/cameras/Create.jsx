@@ -34,17 +34,17 @@ const Create = () => {
       console.log('✅ [CreateCamera] Camera created successfully:', response.data);
       showSuccess('Camera created successfully');
       setTimeout(() => {
-        navigate('/cameras');
+        navigate('/cameras/control-room');
       }, 1500);
     } catch (error) {
       console.error('❌ [CreateCamera] Error creating camera:', error);
       console.error('❌ [CreateCamera] Error response:', error.response?.data);
       console.error('❌ [CreateCamera] Error status:', error.response?.status);
-      
+
       // Handle validation errors
       const errorData = error.response?.data;
       let errorMsg = 'Failed to create camera';
-      
+
       if (errorData) {
         if (errorData.name) {
           errorMsg = `Name: ${errorData.name[0]}`;
@@ -62,7 +62,7 @@ const Create = () => {
           errorMsg = JSON.stringify(errorData);
         }
       }
-      
+
       showError(errorMsg);
     } finally {
       setLoading(false);
@@ -77,10 +77,10 @@ const Create = () => {
         message={modalState.message}
         onClose={hideModal}
       />
-      
+
       <div className="flex items-center space-x-4">
         <button
-          onClick={() => navigate('/cameras')}
+          onClick={() => navigate('/cameras/control-room')}
           className="p-2 hover:bg-dark-card rounded-full transition-colors"
         >
           <ArrowLeftIcon className="h-6 w-6 text-dark-text-secondary" />
@@ -174,7 +174,7 @@ const Create = () => {
           <div className="flex justify-end space-x-4">
             <button
               type="button"
-              onClick={() => navigate('/cameras')}
+              onClick={() => navigate('/cameras/control-room')}
               className="px-6 py-2 border border-dark-border rounded-md text-dark-text-secondary hover:bg-dark-card transition-colors"
             >
               Cancel

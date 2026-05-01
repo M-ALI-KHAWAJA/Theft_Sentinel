@@ -2,8 +2,15 @@
 """Django's command-line utility for administrative tasks."""
 import os
 import sys
+import faulthandler
 
-# Task 4: Set the Memory Fragmentation Env Variable before PyTorch is imported
+# Dump Python stack trace to stderr on any C-level fatal signal
+# (SIGSEGV, SIGABRT, Windows Access Violation, CUDA abort).
+# Zero performance cost — must be the very first thing that runs.
+faulthandler.enable()
+
+# Allow PyTorch to split large VRAM blocks to reduce fragmentation.
+# Must be set before any PyTorch import.
 os.environ["PYTORCH_CUDA_ALLOC_CONF"] = "expandable_segments:True"
 
 
