@@ -146,22 +146,24 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         self.fields[self.username_field].required = False
         self.fields['username'] = serializers.CharField(write_only=True, required=False)
 
-    def _resolve_login_email(self, login_value):
+    def _resolve_login_email(self, login_value, password):
         """
         Return the email Django should authenticate against.
-        Username fallback is allowed only when it resolves to one active user.
+        Username fallback respects branch-scoped usernames by using the password
+        to disambiguate duplicate usernames across branches.
         """
         login_value = login_value.strip()
         if not login_value:
             return login_value
 
-        email_user = User.objects.filter(email=login_value).only('email').first()
+        email_user = User.objects.filter(email__iexact=login_value, is_active=True).only('email').first()
         if email_user is not None:
             return email_user.email
 
         matching_users = User.objects.filter(username=login_value, is_active=True)
-        if matching_users.count() == 1:
-            return matching_users.first().email
+        password_matches = [user for user in matching_users if password and user.check_password(password)]
+        if len(password_matches) == 1:
+            return password_matches[0].email
         return login_value
     
     def validate(self, attrs):
@@ -172,7 +174,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
             })
 
         attrs = attrs.copy()
-        attrs[self.username_field] = self._resolve_login_email(login_value)
+        attrs[self.username_field] = self._resolve_login_email(login_value, attrs.get('password'))
         data = super().validate(attrs)
 
         # Block branch users if branch is not approved/suspended

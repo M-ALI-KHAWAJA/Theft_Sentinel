@@ -86,7 +86,7 @@ const Branches = () => {
   };
 
   const doDelete = async (branchId) => {
-    if (!confirm('Delete this branch? This will deactivate linked users and delete branch data.')) return;
+    if (!confirm('Delete this branch? This will delete all linked users and branch data.')) return;
     try {
       await deleteBranch(branchId);
       showSuccess('Branch deleted.');

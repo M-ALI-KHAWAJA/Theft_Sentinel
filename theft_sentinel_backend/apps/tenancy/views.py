@@ -56,7 +56,7 @@ class CreateSuperAdminView(views.APIView):
 
         with transaction.atomic():
             user = User.objects.create_user(
-                username=data["email"],  # login uses username; keep deterministic
+                username=data["username"],
                 email=data["email"],
                 password=data["password"],
                 role="SUPER_ADMIN",
@@ -108,7 +108,7 @@ class BranchRegistrationView(views.APIView):
             )
 
             admin_user = User.objects.create_user(
-                username=data["email"],  # deterministic; branch-scoped usernames are supported separately
+                username=data["username"],
                 email=data["email"],
                 password=data["password"],
                 role="ADMIN",
@@ -286,21 +286,22 @@ class SuperAdminBranchDeleteView(views.APIView):
         except Exception:
             pass
 
-        # Safe delete: deactivate linked users first, then delete branch & tenant if empty
-        User.objects.filter(branch=branch).update(is_active=False)
+        with transaction.atomic():
+            # Delete all branch-associated users first so SET_NULL on User.branch never
+            # leaves deactivated/orphaned accounts behind.
+            User.objects.filter(branch=branch).exclude(role="SUPER_ADMIN").delete()
 
-        # Delete branch-scoped operational data (camera cascades alerts/incidents/tracking/etc)
-        try:
+            # Camera deletion cascades camera-owned alerts, incidents, tracking,
+            # surveillance events, and AI inference records.
             from apps.cameras.models import Camera
+
             Camera.objects.filter(branch=branch).delete()
-        except Exception:
-            pass
 
-        tenant = branch.tenant
-        branch.delete()
+            tenant = branch.tenant
+            branch.delete()
 
-        if tenant and not tenant.branches.exists():
-            tenant.delete()
+            if tenant and not tenant.branches.exists():
+                tenant.delete()
 
         return Response({"message": "Branch deleted."}, status=status.HTTP_200_OK)
 
