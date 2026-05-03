@@ -7,7 +7,7 @@ env/
 
 # Dependency files created by package managers
 # This is where your team will install packages from
-requirements.txt 
+# requirements.txt 
 
 # Temporary Python files
 __pycache__/
