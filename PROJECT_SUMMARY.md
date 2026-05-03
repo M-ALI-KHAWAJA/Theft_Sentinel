@@ -1,4 +1,3 @@
-# Theft Sentinel — Project Summary
 > **Onboarding Guide for New Developers**
 > Architecture Snapshot — Stable Milestone (April 2026)
 

@@ -1,8 +1,8 @@
 import PropTypes from 'prop-types';
 
-const CameraFeed = ({ cameraId, width = '100%', height = 'auto', className = '' }) => {
+const CameraFeed = ({ cameraId, width = 'auto', height = 'auto', className = '' }) => {
   const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || 'http://localhost:8000';
-  
+
   return (
     <div className={`relative ${className}`}>
       <img

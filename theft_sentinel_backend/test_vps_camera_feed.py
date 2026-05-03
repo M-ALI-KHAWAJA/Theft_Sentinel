@@ -1,6 +1,6 @@
 import cv2
 
-cap = cv2.VideoCapture("rtsp://157.245.111.63:8554/cam1")
+cap = cv2.VideoCapture("http://157.245.111.63:8889/cam2")
 
 while True:
     ret, frame = cap.read()
