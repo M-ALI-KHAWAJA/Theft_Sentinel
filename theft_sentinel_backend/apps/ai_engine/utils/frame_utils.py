@@ -81,13 +81,26 @@ def capture_frame_from_rtsp(rtsp_url: str, timeout: int = 5) -> Optional[np.ndar
                 logger.info(f"Converted IP Webcam URL: {rtsp_url} -> {processed_url}")
         
         logger.info(f"Attempting to capture from: {processed_url[:50]}...")
-        
-        cap = cv2.VideoCapture(processed_url)
+
+        # TASK 1: Explicit CAP_FFMPEG so OPENCV_FFMPEG_CAPTURE_OPTIONS (UDP transport)
+        # is honoured. Without this, Windows auto-selection probes MSMF first, which
+        # sends a TCP RTSP SETUP to MediaMTX before FFmpeg sees the env-var.
+        cap = cv2.VideoCapture(processed_url, cv2.CAP_FFMPEG)
         cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize latency
-        
+
         # Set timeout
         cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout * 1000)
         cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout * 1000)
+
+        # TASK 4: Log which backend was selected and warn if not FFMPEG
+        backend = cap.getBackendName()
+        if backend != "FFMPEG":
+            logger.warning(
+                f"⚠️ Non-FFmpeg backend detected in capture_frame_from_rtsp: "
+                f"{backend} — transport may default to TCP"
+            )
+        else:
+            logger.debug(f"📡 capture_frame_from_rtsp backend=FFMPEG (UDP): {processed_url[:50]}...")
         
         if not cap.isOpened():
             logger.error(f"Failed to open stream: {processed_url}")

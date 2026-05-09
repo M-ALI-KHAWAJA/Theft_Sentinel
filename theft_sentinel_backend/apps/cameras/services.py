@@ -79,19 +79,46 @@ def test_camera_feed(camera):
             processed_url = stream_url
             if stream_url.startswith('http://') and not any(x in stream_url for x in ['/video', '/videofeed', '/shot.jpg']):
                 processed_url = stream_url.rstrip('/') + '/video'
-            
+
             # Convert timeout to milliseconds
             timeout_ms = int(PER_CAMERA_TIMEOUT_SECONDS * 1000)
-            
-            cap = cv2.VideoCapture(processed_url)
+
+            # RTSP transport env-vars are initialised globally in apps/ai_engine/apps.py.
+            # Log here to confirm they are visible in this process/thread before open.
+            logger.warning(
+                f"[RTSP DEBUG] PID={os.getpid()} | health-probe | camera={camera.name} | "
+                f"OPENCV_FFMPEG_CAPTURE_OPTIONS="
+                f"{os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'NOT SET')}"
+            )
+
+            # Explicit CAP_FFMPEG so OPENCV_FFMPEG_CAPTURE_OPTIONS (UDP transport)
+            # is honoured. Without this flag, Windows probes MSMF first which sends a
+            # TCP RTSP SETUP to MediaMTX before FFmpeg ever sees the env-var.
+            cap = cv2.VideoCapture(processed_url, cv2.CAP_FFMPEG)
             cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
             cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout_ms)
             cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout_ms)
-            
+
+            # Log backend + warn if not FFmpeg
+            backend = cap.getBackendName()
+            logger.warning(
+                f"[RTSP DEBUG] camera={camera.name} | Backend={backend} | "
+                f"PID={os.getpid()}"
+            )
+            if backend != "FFMPEG":
+                logger.warning(
+                    f"⚠️ Non-FFmpeg backend detected for health probe of "
+                    f"{camera.name}: {backend} — transport may default to TCP"
+                )
+            else:
+                logger.debug(
+                    f"📡 Health probe backend=FFMPEG (UDP) for {camera.name}: {processed_url}"
+                )
+
             if not cap.isOpened():
                 logger.debug(f"❌ Camera {camera.name} feed is DEAD (cannot open: {processed_url})")
                 return False
-            
+
             # Check timeout before reading frame
             if time.time() - start_time > PER_CAMERA_TIMEOUT_SECONDS:
                 cap.release()

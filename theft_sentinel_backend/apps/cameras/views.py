@@ -279,68 +279,113 @@ class CameraFeedView(views.APIView):
             cap = None
             retry_count = 0
             max_retries = 3
-            
+
             while retry_count < max_retries:
+                # RTSP transport env-vars are initialised globally in apps/ai_engine/apps.py.
+                # Log here to confirm they are visible in this process/thread before open.
+                import os as _os
+                print(
+                    f"[RTSP DEBUG] PID={_os.getpid()} | CameraFeedView | camera={camera.name} | "
+                    f"OPENCV_FFMPEG_CAPTURE_OPTIONS="
+                    f"{_os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'NOT SET')}"
+                )
+
+                # Explicit CAP_FFMPEG so OPENCV_FFMPEG_CAPTURE_OPTIONS (UDP
+                # transport, nobuffer, low_delay) is honoured. Without this flag,
+                # Windows probes MSMF first — MSMF sends a TCP RTSP SETUP to
+                # MediaMTX before FFmpeg ever reads the env-var, producing
+                # "[RTSP] session is reading from path '...', with TCP" in the logs.
+                cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+
+                # Log backend and warn if not FFmpeg
+                _backend = cap.getBackendName()
+                print(
+                    f"[RTSP DEBUG] camera={camera.name} | Backend={_backend} | PID={_os.getpid()}"
+                )
+                if _backend != "FFMPEG":
+                    print(
+                        f"[Camera Feed] ⚠️ Non-FFmpeg backend={_backend} for {stream_url} "
+                        f"— transport may default to TCP"
+                    )
+                else:
+                    print(
+                        f"[Camera Feed] 📡 backend=FFMPEG (UDP) for {camera.name}: {stream_url}"
+                    )
+
                 try:
-                    # Open video stream (supports RTSP, HTTP, RTMP, etc.)
-                    cap = cv2.VideoCapture(stream_url)
-                    
                     if not cap.isOpened():
                         retry_count += 1
+                        cap.release()
+                        cap = None
                         time.sleep(1)
                         continue
-                    
+
                     # Optimize for low latency
                     cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
-                    cap.set(cv2.CAP_PROP_FPS, 30)  # Set FPS
-                    
+                    cap.set(cv2.CAP_PROP_FPS, 30)        # Set FPS
+
                     # For RTSP streams, reduce latency
                     if stream_url.startswith('rtsp://'):
                         cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-                    
+
                     print(f"[Camera Feed] OpenCV connected to {stream_url}")
-                    
+
                     frame_count = 0
-                    while True:
-                        success, frame = cap.read()
-                        
-                        if not success:
-                            # Try to grab multiple frames to clear buffer (reduces latency)
-                            for _ in range(5):
-                                cap.grab()
-                            continue
-                        
-                        frame_count += 1
-                        
-                        # Skip frames if buffer is building up (optional - reduces latency)
-                        # Uncomment to skip every other frame for lower latency
-                        # if frame_count % 2 == 0:
-                        #     continue
-                        
-                        # Encode frame as JPEG with optimized quality for speed
-                        # Lower quality = faster encoding = less latency
-                        ret, buffer = cv2.imencode('.jpg', frame, [
-                            cv2.IMWRITE_JPEG_QUALITY, 75,  # Reduced from 85 for speed
-                            cv2.IMWRITE_JPEG_OPTIMIZE, 1   # Enable optimization
-                        ])
-                        
-                        if not ret:
-                            continue
-                        
-                        # Yield frame in multipart format
-                        yield (b'--frame\r\n'
-                               b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-                    
+
+                    # TASK 3: Wrap inner streaming loop in try/finally so cap.release()
+                    # is guaranteed even when the browser disconnects mid-stream (which
+                    # causes the generator to be garbage-collected without a break),
+                    # preventing zombie RTSP sessions in MediaMTX.
+                    try:
+                        while True:
+                            success, frame = cap.read()
+
+                            if not success:
+                                # Grab multiple frames to clear any stale buffer
+                                for _ in range(5):
+                                    cap.grab()
+                                continue
+
+                            frame_count += 1
+
+                            # Skip frames if buffer is building up (optional - reduces latency)
+                            # Uncomment to skip every other frame for lower latency
+                            # if frame_count % 2 == 0:
+                            #     continue
+
+                            # Encode frame as JPEG with optimized quality for speed
+                            # Lower quality = faster encoding = less latency
+                            ret, buffer = cv2.imencode('.jpg', frame, [
+                                cv2.IMWRITE_JPEG_QUALITY, 75,  # Reduced from 85 for speed
+                                cv2.IMWRITE_JPEG_OPTIMIZE, 1   # Enable optimization
+                            ])
+
+                            if not ret:
+                                continue
+
+                            # Yield frame in multipart format
+                            yield (b'--frame\r\n'
+                                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
+                    finally:
+                        # TASK 3: Always release when the inner loop exits for any reason
+                        # (browser disconnect, exception, generator close)
+                        cap.release()
+                        cap = None
+                        print(f"[Camera Feed] Released capture for {stream_url} "
+                              f"(frames served: {frame_count})")
+                    # Inner loop exited cleanly — no more retries needed
+                    break
+
                 except Exception as e:
-                    print(f"[Camera Feed Error] Camera: {camera.name}, URL: {stream_url}, Error: {str(e)}")
+                    print(f"[Camera Feed Error] Camera: {camera.name}, URL: {stream_url}, "
+                          f"Error: {str(e)}, retry={retry_count + 1}/{max_retries}")
                     retry_count += 1
-                    if retry_count < max_retries:
-                        time.sleep(1)
-                
-                finally:
                     if cap is not None:
                         cap.release()
-            
+                        cap = None
+                    if retry_count < max_retries:
+                        time.sleep(1)
+
             # If all retries failed
             yield (b'--frame\r\n'
                    b'Content-Type: text/plain\r\n\r\n'

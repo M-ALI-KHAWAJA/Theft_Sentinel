@@ -6,6 +6,11 @@ Stores results in database for frontend to read in real-time
 
 import os
 os.environ["OPENH264_LIBRARY"] = r"Z:\FYP\fyp_application\env\Scripts\openh264-1.8.0-win64.dll"
+
+# RTSP transport env-vars are initialised globally in apps/ai_engine/apps.py
+# at Django app-registry load time — before any cv2.VideoCapture() call.
+# Do NOT re-set OPENCV_FFMPEG_CAPTURE_OPTIONS here; apps.py owns that config.
+
 import cv2
 import tempfile
 import time
@@ -57,9 +62,15 @@ class ContinuousMonitor:
 
         # Throttle SSE / callback publishing to _SSE_MAX_FPS
         self._last_callback_time: float = 0.0
-        
+
         # 5-second cooldown for alerting
         self.last_alert_time: float = 0.0
+
+        # ── TASK 4: Latency debug tracking ────────────────────────────────────
+        self._last_capture_time: float = 0.0   # wall-clock when last frame arrived
+        self._reconnect_count: int = 0          # total reconnects since start
+        self._last_fps_log_time: float = 0.0   # throttle periodic FPS log
+        self._capture_fps_window: deque = deque(maxlen=30)  # recent inter-frame gaps
     
     def start(self):
         """Start continuous monitoring in background thread"""
@@ -111,91 +122,215 @@ class ContinuousMonitor:
         }
     
     def _capture_loop(self):
-        """Dedicated thread to read frames at full camera FPS"""
+        """Dedicated thread to read frames at full camera FPS.
+
+        TASK 1+2: VideoCapture is opened with cv2.CAP_FFMPEG so that the
+        OPENCV_FFMPEG_CAPTURE_OPTIONS env-var (UDP transport, nobuffer, low_delay)
+        is honoured.  All reconnect / error-handling logic is preserved.
+        """
         processed_url = self._prepare_url(self.rtsp_url)
-        self.cap = cv2.VideoCapture(processed_url)
-        
+
+        # Verify the env-var is present in THIS process before opening the stream.
+        # If it shows NOT SET the env-var did not propagate from apps.py (startup bug).
+        logger.warning(
+            f"[RTSP DEBUG] PID={os.getpid()} | camera={self.camera_id} | "
+            f"OPENCV_FFMPEG_CAPTURE_OPTIONS="
+            f"{os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'NOT SET')}"
+        )
+        logger.info(
+            f"🚀 Using low-latency UDP RTSP mode for camera {self.camera_id} "
+            f"[rtsp_transport=udp, fflags=nobuffer, flags=low_delay, max_delay=0]"
+        )
+
+        # Explicit CAP_FFMPEG backend so env-var options are applied
+        self.cap = cv2.VideoCapture(processed_url, cv2.CAP_FFMPEG)
+
         if not self.cap.isOpened():
             logger.error(f"Failed to open stream: {processed_url}")
             self.is_running = False
             return
-            
+
+        # Log which backend was actually selected after open
+        _backend = self.cap.getBackendName()
+        logger.warning(
+            f"[RTSP DEBUG] camera={self.camera_id} | Backend={_backend} | "
+            f"PID={os.getpid()} | URL={processed_url}"
+        )
+        if _backend != "FFMPEG":
+            logger.warning(
+                f"⚠️ Non-FFmpeg backend '{_backend}' — transport will NOT use UDP env-var"
+            )
         logger.info(f"✅ Stream opened successfully for camera {self.camera_id}")
-        
+
         while self.is_running:
             try:
                 ret, raw_frame = self.cap.read()
-                
+
                 if not ret or raw_frame is None or getattr(raw_frame, "size", 0) == 0:
-                    logger.warning(f"Failed to read frame from camera {self.camera_id}")
+                    # ── TASK 4: stale-frame / read-failure logging ────────────
                     self.error_count += 1
-                    
-                    # Reconnect after too many errors
+                    now = time.time()
+                    stale_gap = now - self._last_capture_time if self._last_capture_time else 0.0
+                    if stale_gap > 1.0:
+                        logger.warning(
+                            f"⚠️  Stale frame detected for camera {self.camera_id}: "
+                            f"no new frame for {stale_gap:.2f}s "
+                            f"(error_count={self.error_count})"
+                        )
+                    else:
+                        logger.warning(
+                            f"Failed to read frame from camera {self.camera_id} "
+                            f"(error_count={self.error_count})"
+                        )
+
+                    # Reconnect after too many consecutive errors
                     if self.error_count > 10:
-                        logger.info("Too many errors, reconnecting...")
+                        self._reconnect_count += 1
+                        logger.info(
+                            f"🔄 RTSP reconnect #{self._reconnect_count} for camera "
+                            f"{self.camera_id} (too many consecutive read errors)"
+                        )
                         self.cap.release()
                         time.sleep(2)
-                        self.cap = cv2.VideoCapture(processed_url)
+                        # TASK 1: keep CAP_FFMPEG on reconnect so options still apply
+                        self.cap = cv2.VideoCapture(processed_url, cv2.CAP_FFMPEG)
                         self.error_count = 0
-                    
+                        logger.info(
+                            f"✅ Reconnected stream for camera {self.camera_id} "
+                            f"[reconnect #{self._reconnect_count}]"
+                        )
+
                     time.sleep(0.1)
                     continue
-                
+
+                # ── TASK 3: Always replace latest_frame with the newest grab ──
+                # The monitor loop reads self.latest_frame directly, so old
+                # frames are automatically discarded — no queue accumulation.
+
                 # Downscale instantly. 640x480 is plenty for X3D inference and Cloudinary clips.
                 # This reduces memory from 6.2MB per frame to 0.9MB.
                 frame = cv2.resize(raw_frame, (640, 480))
-                
+
                 # Explicitly delete the raw 1080p array to free memory
-                del raw_frame 
+                del raw_frame
 
                 # Reset error count on success
                 self.error_count = 0
                 self.frames_captured += 1
+
+                # ── TASK 4: per-frame latency / FPS diagnostics ───────────────
+                now = time.time()
+                if self._last_capture_time:
+                    gap = now - self._last_capture_time
+                    self._capture_fps_window.append(gap)
+
+                    # Warn if gap between consecutive frames exceeds 1 second
+                    if gap > 1.0:
+                        logger.warning(
+                            f"⚠️  Capture delay {gap:.2f}s exceeds 1 s threshold "
+                            f"for camera {self.camera_id}"
+                        )
+
+                self._last_capture_time = now
+
+                # Log rolling capture FPS every 10 seconds
+                if now - self._last_fps_log_time >= 10.0:
+                    if self._capture_fps_window:
+                        avg_gap = sum(self._capture_fps_window) / len(self._capture_fps_window)
+                        rolling_fps = 1.0 / avg_gap if avg_gap > 0 else 0.0
+                        stats = self.get_stats()
+                        logger.debug(
+                            f"📊 Camera {self.camera_id} — "
+                            f"capture_fps={rolling_fps:.1f} "
+                            f"processing_fps={stats['fps']:.1f} "
+                            f"reconnects={self._reconnect_count}"
+                        )
+                    self._last_fps_log_time = now
+
+                # ── TASK 3: overwrite latest_frame (no queue) ─────────────────
                 self.latest_frame = frame.copy()
-                self._frame_buffer.append(self.latest_frame)
-                
+                self._frame_buffer.append(self.latest_frame)  # rolling alert clip buffer
+
             except Exception as e:
                 logger.error(f"Error in capture loop: {str(e)}", exc_info=True)
                 self.error_count += 1
                 time.sleep(0.5)
 
     def _monitor_loop(self):
-        """Main inference loop - runs at AI processing speed"""
+        """Main inference loop - runs at AI processing speed.
+
+        TASK 3 audit: this loop reads self.latest_frame which is a shared pointer
+        updated atomically by _capture_loop.  There is NO intermediate queue or
+        deque between capture and inference — the monitor always processes the
+        single freshest frame available, automatically discarding any older ones.
+        The only accumulation structure is _frame_buffer (rolling alert clip
+        buffer) which is intentionally preserved for Cloudinary clip uploads.
+        """
         from .inference_runner import InferenceRunner
         from ..utils.frame_utils import capture_frame_from_rtsp
-        
+
         logger.info(f"Initializing AI monitor loop for camera {self.camera_id}")
         self.start_time = time.time()
         runner = InferenceRunner()
-        
+
         import gc
-        
+
+        # ── TASK 4: processing-side latency tracking ──────────────────────────
+        _last_proc_fps_log: float = 0.0
+        _proc_gaps: deque = deque(maxlen=30)
+        _last_proc_time: float = 0.0
+        _warn_fps_threshold: float = 3.0  # warn if processing FPS falls below this
+
         # Wait for the first frame from the capture thread
         while self.is_running and self.latest_frame is None:
             time.sleep(0.1)
-        
+
         # Process frames continuously
         while self.is_running:
             try:
+                # TASK 3: always grab the very latest pointer — no copy queued up
                 frame = self.latest_frame
                 if frame is None or getattr(frame, "size", 0) == 0:
                     time.sleep(0.1)
                     continue
                 
                 self.frames_processed += 1
-                
+
                 if self.frames_processed % 50 == 0:
                     gc.collect()
-                
+
+                # ── TASK 4: measure per-inference gap ────────────────────────
+                _proc_now = time.time()
+                if _last_proc_time:
+                    _proc_gaps.append(_proc_now - _last_proc_time)
+                _last_proc_time = _proc_now
+
                 # Run AI inference
                 result = runner.run_inference(frame, camera_id=self.camera_id)
-                
+
                 # Task 3: Aggressive CUDA Cache Flushing (balanced for FPS)
                 if self.frames_processed % 15 == 0 or result.get('classification') == 'theft':
                     import torch
                     if torch.cuda.is_available():
                         torch.cuda.empty_cache()
-                        
+
+                # ── TASK 4: periodic processing FPS log + low-FPS warning ─────
+                if _proc_now - _last_proc_fps_log >= 10.0 and _proc_gaps:
+                    avg_gap = sum(_proc_gaps) / len(_proc_gaps)
+                    proc_fps = 1.0 / avg_gap if avg_gap > 0 else 0.0
+                    _last_proc_fps_log = _proc_now
+                    if proc_fps < _warn_fps_threshold:
+                        logger.warning(
+                            f"🐢 Processing FPS severely degraded for camera "
+                            f"{self.camera_id}: {proc_fps:.1f} fps "
+                            f"(threshold={_warn_fps_threshold:.0f})"
+                        )
+                    else:
+                        logger.debug(
+                            f"📊 Processing FPS for camera {self.camera_id}: "
+                            f"{proc_fps:.1f} fps"
+                        )
+
                 result['timestamp'] = timezone.now().isoformat()
                 result['fps'] = self.get_stats()['fps']
                 # Attach native frame dimensions so the frontend can scale bboxes
