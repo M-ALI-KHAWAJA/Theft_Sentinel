@@ -4,6 +4,7 @@ Feedback Serializers
 from rest_framework import serializers
 from .models import Feedback
 from apps.accounts.serializers import UserSerializer
+from apps.accounts.validation import validate_message
 
 
 class FeedbackSerializer(serializers.ModelSerializer):
@@ -27,7 +28,5 @@ class FeedbackCreateSerializer(serializers.ModelSerializer):
     
     def validate_message(self, value):
         """Validate message is not empty"""
-        if not value or not value.strip():
-            raise serializers.ValidationError("Message cannot be empty")
-        return value
+        return validate_message(value)
 

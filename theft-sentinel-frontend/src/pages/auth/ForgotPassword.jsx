@@ -4,6 +4,7 @@ import { forgotPassword } from '../../api/auth';
 import { EnvelopeIcon, ArrowLeftIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
+import { validateEmail } from '../../utils/validation';
 
 const ForgotPassword = () => {
   const navigate = useNavigate();
@@ -24,10 +25,15 @@ const ForgotPassword = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const emailCheck = validateEmail(formData.email);
+    if (!emailCheck.valid) {
+      showError(emailCheck.message);
+      return;
+    }
     setLoading(true);
 
     try {
-      const response = await forgotPassword(formData.email);
+      const response = await forgotPassword(formData.email.trim().toLowerCase());
       showSuccess(
         response.data.message || 
         'If this email is registered as an admin, a password reset link has been sent to your email.'

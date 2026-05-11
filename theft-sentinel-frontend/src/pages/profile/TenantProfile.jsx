@@ -5,7 +5,17 @@ import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
 import { changePassword, getProfile } from '../../api/auth';
 import { getBranchAdminProfile, updateBranchAdminProfile } from '../../api/tenancy';
-import { validatePassword } from '../../utils/validation';
+import {
+  normalizeCNIC,
+  normalizePakistaniPhone,
+  validateAddress,
+  validateCNIC,
+  validateCompanyName,
+  validateEmail,
+  validateName,
+  validatePakistaniPhone,
+  validatePassword,
+} from '../../utils/validation';
 
 const formatApiError = (data, fallback) => {
   if (!data) return fallback;
@@ -78,11 +88,27 @@ const TenantProfile = () => {
 
   const handleSave = async (e) => {
     e.preventDefault();
+    const checks = [
+      validateName(formData.full_name),
+      validateEmail(formData.email),
+      validateCNIC(formData.cnic),
+      validatePakistaniPhone(formData.phone_number),
+      validateCompanyName(formData.company_name),
+      validateCompanyName(formData.branch_name),
+      validateAddress(formData.address),
+    ];
+    const failed = checks.find((check) => !check.valid);
+    if (failed) {
+      showError(failed.message);
+      return;
+    }
     setSaving(true);
     try {
       const payload = Object.fromEntries(
         Object.entries(formData).map(([key, value]) => [key, value.trim()])
       );
+      payload.phone_number = normalizePakistaniPhone(payload.phone_number);
+      payload.cnic = normalizeCNIC(payload.cnic);
       await updateBranchAdminProfile(payload);
       const refreshed = await getProfile();
       setUser(refreshed.data);
@@ -161,7 +187,7 @@ const TenantProfile = () => {
                     type={field === 'email' ? 'email' : 'text'}
                     value={formData[field]}
                     onChange={(e) => handleChange(field, e.target.value)}
-                    required={field !== 'phone_number'}
+                    required
                     className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
                   />
                 </div>

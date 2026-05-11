@@ -3,7 +3,18 @@ import { useNavigate } from 'react-router-dom';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
 import { createSuperAdmin, superAdminExists } from '../../api/tenancy';
-import { validateUsername } from '../../utils/validation';
+import {
+  firstInvalid,
+  normalizeCNIC,
+  normalizePakistaniPhone,
+  scrollToFirstInvalid,
+  validateCNIC,
+  validateEmail,
+  validateName,
+  validatePakistaniPhone,
+  validatePassword,
+  validateUsername,
+} from '../../utils/validation';
 
 const formatApiError = (data) => {
   if (!data) return 'Failed to create Super Admin.';
@@ -40,6 +51,7 @@ const CreateSuperAdmin = () => {
     partner_names: [],
     partner_cnics: [],
   });
+  const [errors, setErrors] = useState({});
 
   useEffect(() => {
     const check = async () => {
@@ -68,6 +80,7 @@ const CreateSuperAdmin = () => {
 
   const handleChange = (e) => {
     setFormData((p) => ({ ...p, [e.target.name]: e.target.value }));
+    if (errors[e.target.name]) setErrors((prev) => ({ ...prev, [e.target.name]: '' }));
   };
 
   const handlePartnerChange = (idx, key, value) => {
@@ -76,14 +89,36 @@ const CreateSuperAdmin = () => {
       arr[idx] = value;
       return { ...p, [key]: arr };
     });
+    const errorKey = `${key}_${idx}`;
+    if (errors[errorKey]) setErrors((prev) => ({ ...prev, [errorKey]: '' }));
+  };
+
+  const validateForm = () => {
+    const checks = [
+      ['full_name', validateName(formData.full_name)],
+      ['phone_number', validatePakistaniPhone(formData.phone_number)],
+      ['email', validateEmail(formData.email)],
+      ['username', validateUsername(formData.username)],
+      ['password', validatePassword(formData.password)],
+    ];
+    for (let idx = 0; idx < Number(formData.partners_count || 0); idx += 1) {
+      checks.push([`partner_names_${idx}`, validateName(formData.partner_names[idx] || '')]);
+      checks.push([`partner_cnics_${idx}`, validateCNIC(formData.partner_cnics[idx] || '')]);
+    }
+    const nextErrors = {};
+    checks.forEach(([field, check]) => {
+      if (!check.valid) nextErrors[field] = check.message;
+    });
+    setErrors(nextErrors);
+    return firstInvalid(checks.map(([, check]) => check)).valid;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    const usernameCheck = validateUsername(formData.username);
-    if (!usernameCheck.valid) {
-      showError(usernameCheck.message);
+    if (!validateForm()) {
+      showError('Please fix the validation errors before submitting');
+      scrollToFirstInvalid();
       return;
     }
 
@@ -92,9 +127,17 @@ const CreateSuperAdmin = () => {
       const payload = Object.fromEntries(
         Object.entries(formData).map(([key, value]) => [
           key,
-          key !== 'password' && typeof value === 'string' ? value.trim() : value,
+          key === 'password'
+            ? value
+            : key === 'phone_number'
+              ? normalizePakistaniPhone(value)
+              : typeof value === 'string'
+                ? value.trim()
+                : value,
         ])
       );
+      payload.partner_names = (payload.partner_names || []).map((name) => name.trim());
+      payload.partner_cnics = (payload.partner_cnics || []).map((cnic) => normalizeCNIC(cnic));
 
       await createSuperAdmin(payload);
       showSuccess('Super Admin created. You can now log in.');
@@ -150,8 +193,10 @@ const CreateSuperAdmin = () => {
                 value={formData.full_name}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.full_name}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.full_name ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.full_name && <p className="mt-1 text-sm text-status-error">{errors.full_name}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Phone Number</label>
@@ -159,8 +204,11 @@ const CreateSuperAdmin = () => {
                 name="phone_number"
                 value={formData.phone_number}
                 onChange={handleChange}
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                required
+                aria-invalid={!!errors.phone_number}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.phone_number ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.phone_number && <p className="mt-1 text-sm text-status-error">{errors.phone_number}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Email</label>
@@ -170,8 +218,10 @@ const CreateSuperAdmin = () => {
                 value={formData.email}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.email}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.email ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.email && <p className="mt-1 text-sm text-status-error">{errors.email}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Username</label>
@@ -180,8 +230,10 @@ const CreateSuperAdmin = () => {
                 value={formData.username}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.username}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.username ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.username && <p className="mt-1 text-sm text-status-error">{errors.username}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Password</label>
@@ -191,8 +243,10 @@ const CreateSuperAdmin = () => {
                 value={formData.password}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.password}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.password ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.password && <p className="mt-1 text-sm text-status-error">{errors.password}</p>}
             </div>
           </div>
 
@@ -220,8 +274,10 @@ const CreateSuperAdmin = () => {
                       value={formData.partner_names[idx] || ''}
                       onChange={(e) => handlePartnerChange(idx, 'partner_names', e.target.value)}
                       required
-                      className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                      aria-invalid={!!errors[`partner_names_${idx}`]}
+                      className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors[`partner_names_${idx}`] ? 'border-status-error' : 'border-dark-border'}`}
                     />
+                    {errors[`partner_names_${idx}`] && <p className="mt-1 text-sm text-status-error">{errors[`partner_names_${idx}`]}</p>}
                   </div>
                   <div>
                     <label className="block text-sm text-dark-text-secondary mb-1">Partner CNIC #{idx + 1}</label>
@@ -229,8 +285,10 @@ const CreateSuperAdmin = () => {
                       value={formData.partner_cnics[idx] || ''}
                       onChange={(e) => handlePartnerChange(idx, 'partner_cnics', e.target.value)}
                       required
-                      className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                      aria-invalid={!!errors[`partner_cnics_${idx}`]}
+                      className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors[`partner_cnics_${idx}`] ? 'border-status-error' : 'border-dark-border'}`}
                     />
+                    {errors[`partner_cnics_${idx}`] && <p className="mt-1 text-sm text-status-error">{errors[`partner_cnics_${idx}`]}</p>}
                   </div>
                 </div>
               ))}

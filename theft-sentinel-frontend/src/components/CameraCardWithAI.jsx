@@ -1,10 +1,10 @@
-import { VideoCameraIcon, PencilIcon, TrashIcon, EyeIcon, ArrowPathIcon } from '@heroicons/react/24/outline';
+import { VideoCameraIcon, PencilIcon, TrashIcon, EyeIcon, ArrowPathIcon, PowerIcon } from '@heroicons/react/24/outline';
 import { useRecoilValue } from 'recoil';
 import CameraFeedWithOverlay from './CameraFeedWithOverlay';
 import { useContinuousMonitor } from '../hooks/useContinuousMonitor';
 import { authUserState, hasPermission } from '../store/authStore';
 
-const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, showFeed = false, showActions = false }) => {
+const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, onStatusChange, showFeed = false, showActions = false }) => {
   // ── Auth: determine if this user can control AI monitoring ────────────────
   // ADMIN has 'all' permissions; SECURITY_INCHARGE has 'control_ai_monitoring'.
   // GUARD is read-only — they can see the toggle state but cannot change it.
@@ -73,14 +73,14 @@ const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, showFeed = fal
       
       <div className="p-6">
         {/* Header */}
-        <div className="flex items-start justify-between mb-3">
-          <div className="flex items-center space-x-3">
+        <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 mb-3">
+          <div className="flex items-center space-x-3 min-w-0">
             <div className="bg-ai-blue p-3 rounded-lg">
               <VideoCameraIcon className="h-8 w-8 text-white" />
             </div>
-            <div>
-              <h3 className="text-lg font-semibold text-dark-text-primary">{camera.name}</h3>
-              <p className="text-sm text-dark-text-secondary">{camera.location}</p>
+            <div className="min-w-0">
+              <h3 className="text-lg font-semibold text-dark-text-primary truncate">{camera.name}</h3>
+              <p className="text-sm text-dark-text-secondary truncate">{camera.location}</p>
             </div>
           </div>
           <div className="flex flex-col items-end gap-2">
@@ -244,7 +244,20 @@ const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, showFeed = fal
 
           {/* Admin Actions */}
           {showActions && (
-            <div className="flex space-x-2">
+            <div className="flex flex-col sm:flex-row gap-2">
+              {onStatusChange && (
+                <button
+                  onClick={() => onStatusChange(camera, camera.status === 'ONLINE' ? 'OFFLINE' : 'ONLINE')}
+                  className={`flex-1 flex items-center justify-center space-x-2 px-4 py-2 rounded-md transition-colors font-semibold ${
+                    camera.status === 'ONLINE'
+                      ? 'bg-dark-card text-status-error border border-status-error/40 hover:bg-status-error/10'
+                      : 'bg-status-success text-white hover:bg-status-success/90'
+                  }`}
+                >
+                  <PowerIcon className="h-4 w-4" />
+                  <span>{camera.status === 'ONLINE' ? 'Turn Off Camera' : 'Turn On Camera'}</span>
+                </button>
+              )}
               {onEdit && (
                 <button
                   onClick={() => onEdit(camera)}

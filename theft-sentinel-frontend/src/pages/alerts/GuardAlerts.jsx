@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listAlerts, acknowledgeAlert } from '../../api/alerts';
+import { listAlerts } from '../../api/alerts';
 import { useNavigate } from 'react-router-dom';
 import { useRecoilValue } from 'recoil';
 import { isAuthenticatedState } from '../../store/authStore';
@@ -8,8 +8,7 @@ import { BellAlertIcon, CheckCircleIcon, ArrowPathIcon } from '@heroicons/react/
 import toast from 'react-hot-toast';
 
 /**
- * Guard Alerts Page - View and acknowledge alerts
- * Guards can view real-time alerts and acknowledge them, but cannot delete
+ * Guard Alerts Page - read-only real-time alert view.
  */
 const GuardAlerts = () => {
   const navigate = useNavigate();
@@ -73,18 +72,6 @@ const GuardAlerts = () => {
     return () => clearInterval(interval);
   }, [fetchAlerts, isAuthenticated]);
 
-  const handleAcknowledge = async (alertId) => {
-    try {
-      await acknowledgeAlert(alertId, 'ACKED');
-      toast.success('Alert acknowledged successfully');
-      fetchAlerts(); // Refresh list
-    } catch (error) {
-      console.error('Error acknowledging alert:', error);
-      const errorMsg = error.response?.data?.detail || error.response?.data?.error || 'Failed to acknowledge alert';
-      toast.error(errorMsg);
-    }
-  };
-
   const handleViewAlert = (alert) => {
     navigate(`/alerts/${alert.id}`);
   };
@@ -94,7 +81,7 @@ const GuardAlerts = () => {
     const matchesSearch = !filters.search || 
       alert.alert_type?.toLowerCase().includes(filters.search.toLowerCase()) ||
       alert.camera_name?.toLowerCase().includes(filters.search.toLowerCase());
-    const matchesSeverity = !filters.severity || alert.severity === filters.severity;
+    const matchesSeverity = !filters.severity || alert.severity?.toUpperCase() === filters.severity;
     const matchesStatus = !filters.status || alert.status === filters.status;
     return matchesSearch && matchesSeverity && matchesStatus;
   });
@@ -102,7 +89,7 @@ const GuardAlerts = () => {
   // Count stats
   const activeAlerts = alerts.filter(a => a.status === 'ACTIVE').length;
   const acknowledgedAlerts = alerts.filter(a => a.status === 'ACKED').length;
-  const criticalAlerts = alerts.filter(a => a.severity === 'critical' && a.status === 'ACTIVE').length;
+  const highAlerts = alerts.filter(a => a.severity?.toUpperCase() === 'HIGH' && a.status === 'ACTIVE').length;
 
   if (loading && alerts.length === 0) {
     return (
@@ -149,8 +136,8 @@ const GuardAlerts = () => {
         <div className="glass p-4 rounded-xl border border-dark-border border-l-4 border-status-warning">
           <div className="flex items-center justify-between">
             <div>
-              <p className="text-sm text-dark-text-muted mb-1">Critical</p>
-              <p className="text-2xl font-bold text-status-warning">{criticalAlerts}</p>
+              <p className="text-sm text-dark-text-muted mb-1">High</p>
+              <p className="text-2xl font-bold text-status-warning">{highAlerts}</p>
             </div>
             <div className="w-3 h-3 bg-status-warning rounded-full animate-pulse" />
           </div>
@@ -182,10 +169,8 @@ const GuardAlerts = () => {
             className="px-4 py-2 bg-dark-card border border-dark-border rounded-lg text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent transition-all duration-200"
           >
             <option value="">All Severity</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="critical">Critical</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="HIGH">High</option>
           </select>
           <select
             value={filters.status}
@@ -216,18 +201,6 @@ const GuardAlerts = () => {
                 onClick={() => handleViewAlert(alert)}
                 showDelete={false} // Guards cannot delete
               />
-              {/* Acknowledge Button for Active Alerts */}
-              {alert.status === 'ACTIVE' && (
-                <div className="mt-3">
-                  <button
-                    onClick={() => handleAcknowledge(alert.id)}
-                    className="w-full flex items-center justify-center gap-2 px-4 py-2 bg-status-success text-white rounded-lg hover:bg-status-success/90 transition-all duration-200 font-semibold shadow-glow-success hover:shadow-glow-success-lg"
-                  >
-                    <CheckCircleIcon className="h-5 w-5" />
-                    Acknowledge Alert
-                  </button>
-                </div>
-              )}
             </div>
           ))}
         </div>

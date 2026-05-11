@@ -6,6 +6,7 @@ import {
   deleteAnsweredSuperAdminQuery,
   listSuperAdminPendingQueries,
 } from '../../api/support';
+import { validateReason } from '../../utils/validation';
 
 const Queries = () => {
   const { modalState, showSuccess, showError, hideModal } = useModal();
@@ -32,12 +33,13 @@ const Queries = () => {
 
   const answer = async (id) => {
     const text = answerDrafts[id] || '';
-    if (!text.trim()) {
-      showError('Answer is required.');
+    const answerCheck = validateReason(text);
+    if (!answerCheck.valid) {
+      showError(answerCheck.message);
       return;
     }
     try {
-      await answerSuperAdminQuery(id, text);
+      await answerSuperAdminQuery(id, text.trim());
       showSuccess('Answered.');
       setAnswerDrafts((p) => ({ ...p, [id]: '' }));
       await load();

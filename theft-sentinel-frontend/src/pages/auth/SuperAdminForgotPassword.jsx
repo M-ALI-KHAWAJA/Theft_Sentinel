@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { superAdminForgotPassword } from '../../api/tenancy';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
+import { validateEmail } from '../../utils/validation';
 
 const SuperAdminForgotPassword = () => {
   const navigate = useNavigate();
@@ -12,9 +13,14 @@ const SuperAdminForgotPassword = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const emailCheck = validateEmail(email);
+    if (!emailCheck.valid) {
+      showError(emailCheck.message);
+      return;
+    }
     setLoading(true);
     try {
-      const res = await superAdminForgotPassword(email);
+      const res = await superAdminForgotPassword(email.trim().toLowerCase());
       showSuccess(res.data?.message || 'Reset link sent.');
       setTimeout(() => navigate('/login'), 2000);
     } catch (err) {

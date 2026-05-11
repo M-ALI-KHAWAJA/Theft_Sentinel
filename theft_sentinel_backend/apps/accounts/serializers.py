@@ -6,6 +6,12 @@ import re
 from rest_framework import serializers
 from django.contrib.auth import get_user_model
 from rest_framework_simplejwt.serializers import TokenObtainPairSerializer
+from .validation import (
+    PASSWORD_ERROR,
+    normalize_email,
+    normalize_username,
+    validate_password_value,
+)
 
 User = get_user_model()
 
@@ -18,6 +24,7 @@ PASSWORD_COMPLEXITY_ERROR = (
     "letter (A–Z), one lowercase letter (a–z), one number (0–9), and one special "
     "character (e.g. @, #, $, %)."
 )
+PASSWORD_COMPLEXITY_ERROR = PASSWORD_ERROR
 
 
 def validate_password_strength(value):
@@ -25,17 +32,7 @@ def validate_password_strength(value):
     Enforce password rules for set, change, and reset flows.
     Raises ValidationError with a single user-facing message if invalid.
     """
-    if not value or len(value) < 8:
-        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
-    if not re.search(r"[A-Z]", value):
-        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
-    if not re.search(r"[a-z]", value):
-        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
-    if not re.search(r"[0-9]", value):
-        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
-    if not re.search(r"[^A-Za-z0-9]", value):
-        raise serializers.ValidationError(PASSWORD_COMPLEXITY_ERROR)
-    return value
+    return validate_password_value(value)
 
 
 class UserSerializer(serializers.ModelSerializer):
@@ -85,6 +82,25 @@ class UserSerializer(serializers.ModelSerializer):
                     )
         return value
 
+    def validate_username(self, value):
+        value = normalize_username(value)
+        branch = getattr(self.instance, "branch", None) if self.instance is not None else None
+        qs = User.objects.filter(username__iexact=value, branch=branch)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("Username already exists.")
+        return value
+
+    def validate_email(self, value):
+        value = normalize_email(value)
+        qs = User.objects.filter(email__iexact=value)
+        if self.instance is not None:
+            qs = qs.exclude(pk=self.instance.pk)
+        if qs.exists():
+            raise serializers.ValidationError("Email already exists.")
+        return value
+
     def get_branch_id(self, obj):
         return str(obj.branch.id) if getattr(obj, "branch", None) else None
 
@@ -124,9 +140,31 @@ class UserCreateSerializer(serializers.ModelSerializer):
         """Admin creation is branch-scoped; global uniqueness removed."""
         return value
 
+    def validate_username(self, value):
+        return normalize_username(value)
+
+    def validate_email(self, value):
+        value = normalize_email(value)
+        if User.objects.filter(email__iexact=value).exists():
+            raise serializers.ValidationError("Email already exists.")
+        return value
+
     def validate_password(self, value):
         validate_password_strength(value)
         return value
+
+    def validate(self, attrs):
+        request = self.context.get("request")
+        branch = getattr(getattr(request, "user", None), "branch", None)
+        if branch is not None:
+            exists = User.objects.filter(username__iexact=attrs["username"], branch=branch).exists()
+            message = "Username already exists in this branch."
+        else:
+            exists = User.objects.filter(username__iexact=attrs["username"], branch__isnull=True).exists()
+            message = "Username already exists."
+        if exists:
+            raise serializers.ValidationError({"username": [message]})
+        return attrs
     
     def create(self, validated_data):
         password = validated_data.pop('password')
@@ -160,7 +198,7 @@ class CustomTokenObtainPairSerializer(TokenObtainPairSerializer):
         if email_user is not None:
             return email_user.email
 
-        matching_users = User.objects.filter(username=login_value, is_active=True)
+        matching_users = User.objects.filter(username__iexact=login_value, is_active=True)
         password_matches = [user for user in matching_users if password and user.check_password(password)]
         if len(password_matches) == 1:
             return password_matches[0].email
@@ -227,8 +265,9 @@ class ForgotPasswordSerializer(serializers.Serializer):
     
     def validate_email(self, value):
         """Validate that email exists and belongs to an admin"""
+        value = normalize_email(value)
         try:
-            user = User.objects.get(email=value)
+            user = User.objects.get(email__iexact=value)
         except User.DoesNotExist:
             raise serializers.ValidationError(NON_ADMIN_FORGOT_PASSWORD_MESSAGE)
         if user.role != 'ADMIN':

@@ -1,10 +1,14 @@
 from rest_framework import serializers
 
+from apps.accounts.validation import validate_message, validate_reason
 from .models import SupportQuery
 
 
 class SupportQueryCreateSerializer(serializers.Serializer):
     message = serializers.CharField()
+
+    def validate_message(self, value):
+        return validate_message(value)
 
 
 class SupportQuerySerializer(serializers.ModelSerializer):
@@ -58,4 +62,7 @@ class BranchAdminQueryActionSerializer(serializers.Serializer):
 
 class SuperAdminQueryAnswerSerializer(serializers.Serializer):
     answer = serializers.CharField()
+
+    def validate_answer(self, value):
+        return validate_reason(value)
 

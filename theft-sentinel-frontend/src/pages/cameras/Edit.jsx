@@ -4,6 +4,14 @@ import { getCamera, updateCamera } from '../../api/cameras';
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
+import {
+  firstInvalid,
+  scrollToFirstInvalid,
+  trimInput,
+  validateCameraLocation,
+  validateCameraName,
+  validateStreamUrl,
+} from '../../utils/validation';
 
 const Edit = () => {
   const navigate = useNavigate();
@@ -18,6 +26,7 @@ const Edit = () => {
   });
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [errors, setErrors] = useState({});
 
   useEffect(() => {
     fetchCamera();
@@ -43,14 +52,37 @@ const Edit = () => {
       ...formData,
       [e.target.name]: e.target.value,
     });
+    if (errors[e.target.name]) setErrors((prev) => ({ ...prev, [e.target.name]: '' }));
+  };
+
+  const validateForm = () => {
+    const checks = [
+      ['name', validateCameraName(formData.name)],
+      ['location', validateCameraLocation(formData.location)],
+      ['rtsp_url', validateStreamUrl(formData.rtsp_url)],
+    ];
+    const nextErrors = {};
+    checks.forEach(([field, check]) => {
+      if (!check.valid) nextErrors[field] = check.message;
+    });
+    setErrors(nextErrors);
+    return firstInvalid(checks.map(([, check]) => check)).valid;
   };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (!validateForm()) {
+      showError('Please fix the validation errors before submitting');
+      scrollToFirstInvalid();
+      return;
+    }
     setSubmitting(true);
 
     try {
-      await updateCamera(id, formData);
+      const payload = Object.fromEntries(
+        Object.entries(formData).map(([key, value]) => [key, typeof value === 'string' ? trimInput(value) : value])
+      );
+      await updateCamera(id, payload);
       showSuccess('Camera updated successfully');
       setTimeout(() => {
         navigate('/cameras/control-room');
@@ -100,8 +132,10 @@ const Edit = () => {
                 required
                 value={formData.name}
                 onChange={handleChange}
-                className="mt-1 block w-full px-3 py-2 bg-dark-card border border-dark-border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent"
+                aria-invalid={!!errors.name}
+                className={`mt-1 block w-full px-3 py-2 bg-dark-card border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent ${errors.name ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.name && <p className="mt-1 text-sm text-status-error">{errors.name}</p>}
             </div>
 
             <div>
@@ -115,8 +149,10 @@ const Edit = () => {
                 required
                 value={formData.location}
                 onChange={handleChange}
-                className="mt-1 block w-full px-3 py-2 bg-dark-card border border-dark-border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent"
+                aria-invalid={!!errors.location}
+                className={`mt-1 block w-full px-3 py-2 bg-dark-card border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent ${errors.location ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.location && <p className="mt-1 text-sm text-status-error">{errors.location}</p>}
             </div>
 
             <div>
@@ -130,8 +166,10 @@ const Edit = () => {
                 required
                 value={formData.rtsp_url}
                 onChange={handleChange}
-                className="mt-1 block w-full px-3 py-2 bg-dark-card border border-dark-border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent"
+                aria-invalid={!!errors.rtsp_url}
+                className={`mt-1 block w-full px-3 py-2 bg-dark-card border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent ${errors.rtsp_url ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.rtsp_url && <p className="mt-1 text-sm text-status-error">{errors.rtsp_url}</p>}
             </div>
 
             <div>

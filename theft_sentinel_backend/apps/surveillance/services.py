@@ -2,6 +2,7 @@
 Surveillance Service - Process AI events and create alerts/incidents
 """
 from apps.alerts.models import Alert
+from apps.alerts.services import dispatch_theft_alert_sms
 from apps.incidents.models import Incident
 from apps.cameras.models import Camera
 import logging
@@ -95,6 +96,10 @@ class SurveillanceService:
         )
         
         logger.info(f"Alert created: {alert.id} for event {surveillance_event.id}")
+        try:
+            dispatch_theft_alert_sms(alert, async_send=True)
+        except Exception:
+            logger.exception("Failed to dispatch Twilio SMS for alert %s", alert.id)
         return alert
     
     @staticmethod
@@ -115,7 +120,7 @@ class SurveillanceService:
             confidence = surveillance_event.ai_data.get('confidence', 0)
             if confidence > 0.8:
                 return 'MEDIUM'
-            return 'LOW'
+            return 'MEDIUM'
     
     @staticmethod
     def _should_create_incident(surveillance_event, alert):

@@ -34,12 +34,13 @@ const List = () => {
   const fetchAlerts = async () => {
     setLoading(true);
     try {
-      const response = await listAlerts({
+      const params = {
         page: currentPage,
         search: filters.search,
-        severity: filters.severity,
         acknowledged: filters.acknowledged,
-      });
+      };
+      if (filters.severity) params.severity = filters.severity;
+      const response = await listAlerts(params);
       setAlerts(response.data.results || response.data);
       setTotalPages(Math.ceil((response.data.count || alerts.length) / 10));
     } catch (error) {
@@ -92,7 +93,7 @@ const List = () => {
         alertType="alert"
       />
 
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <h1 className="text-3xl font-bold text-dark-text-primary">Alerts</h1>
         <button
           onClick={fetchAlerts}
@@ -118,10 +119,8 @@ const List = () => {
             className="px-4 py-2 bg-dark-card border border-dark-border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent"
           >
             <option value="">All Severity</option>
-            <option value="low">Low</option>
-            <option value="medium">Medium</option>
-            <option value="high">High</option>
-            <option value="critical">Critical</option>
+            <option value="MEDIUM">Medium</option>
+            <option value="HIGH">High</option>
           </select>
           <select
             value={filters.acknowledged}

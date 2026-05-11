@@ -23,8 +23,8 @@ const FullScreenCameraModal = ({ show, camera, onClose }) => {
       </button>
 
       {/* Camera Info Header */}
-      <div className="absolute top-4 left-4 z-[60] bg-black bg-opacity-70 text-white px-4 py-2 rounded-lg">
-        <h2 className="text-xl font-bold">{camera.name}</h2>
+      <div className="absolute top-4 left-4 right-20 sm:right-auto z-[60] bg-black bg-opacity-70 text-white px-4 py-2 rounded-lg min-w-0">
+        <h2 className="text-lg sm:text-xl font-bold truncate">{camera.name}</h2>
         <p className="text-sm text-gray-300">{camera.location}</p>
       </div>
 

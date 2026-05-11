@@ -55,24 +55,67 @@ class CreateSuperAdminView(views.APIView):
         data = serializer.validated_data
 
         with transaction.atomic():
-            user = User.objects.create_user(
-                username=data["username"],
-                email=data["email"],
-                password=data["password"],
+            user = User.objects.filter(
+                email__iexact=data["email"],
                 role="SUPER_ADMIN",
-                is_active=True,
-            )
+                is_active=False,
+            ).first()
+            if user is not None:
+                user.username = data["username"]
+                user.email = data["email"]
+                user.role = "SUPER_ADMIN"
+                user.branch = None
+                user.is_active = True
+                user.is_staff = True
+                user.is_superuser = True
+                user.set_password(data["password"])
+                user.save(
+                    update_fields=[
+                        "username",
+                        "email",
+                        "role",
+                        "branch",
+                        "is_active",
+                        "is_staff",
+                        "is_superuser",
+                        "password",
+                    ]
+                )
+            else:
+                user = User.objects.create_user(
+                    username=data["username"],
+                    email=data["email"],
+                    password=data["password"],
+                    role="SUPER_ADMIN",
+                    is_active=True,
+                    is_staff=True,
+                    is_superuser=True,
+                )
 
             partners = []
             for name, cnic in zip(data.get("partner_names", []), data.get("partner_cnics", [])):
                 partners.append({"name": name, "cnic": cnic})
 
-            SuperAdminProfile.objects.create(
+            profile, _ = SuperAdminProfile.objects.get_or_create(
                 user=user,
-                full_name=data["full_name"],
-                phone_number=data.get("phone_number") or "",
-                partners_count=data["partners_count"],
-                partners=partners,
+                defaults={
+                    "full_name": data["full_name"],
+                    "phone_number": data.get("phone_number") or "",
+                    "partners_count": data["partners_count"],
+                    "partners": partners,
+                },
+            )
+            profile.full_name = data["full_name"]
+            profile.phone_number = data.get("phone_number") or ""
+            profile.partners_count = data["partners_count"]
+            profile.partners = partners
+            profile.save(
+                update_fields=[
+                    "full_name",
+                    "phone_number",
+                    "partners_count",
+                    "partners",
+                ]
             )
 
         return Response(
@@ -417,7 +460,7 @@ class SuperAdminForgotPasswordView(views.APIView):
         email = serializer.validated_data["email"]
 
         try:
-            user = User.objects.get(email=email, role="SUPER_ADMIN", is_active=True)
+            user = User.objects.get(email__iexact=email, role="SUPER_ADMIN", is_active=True)
         except User.DoesNotExist:
             return Response({"error": "Invalid Super Admin email."}, status=status.HTTP_400_BAD_REQUEST)
 
@@ -460,7 +503,7 @@ class BranchAdminResetRequestCreateView(views.APIView):
         reason = serializer.validated_data["reason"]
 
         try:
-            user = User.objects.select_related("branch").get(email=email, role="ADMIN", is_active=True)
+            user = User.objects.select_related("branch").get(email__iexact=email, role="ADMIN", is_active=True)
         except User.DoesNotExist:
             return Response({"error": "Email must belong to a Branch Admin."}, status=status.HTTP_400_BAD_REQUEST)
 

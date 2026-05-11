@@ -5,6 +5,7 @@ from rest_framework import serializers
 from .models import Incident
 from apps.alerts.serializers import AlertSerializer
 from apps.accounts.serializers import UserSerializer
+from apps.accounts.validation import validate_message
 
 
 class IncidentSerializer(serializers.ModelSerializer):
@@ -51,9 +52,19 @@ class IncidentStatusUpdateSerializer(serializers.Serializer):
     status = serializers.ChoiceField(choices=['CREATED', 'ASSIGNED', 'ACKNOWLEDGED', 'RESOLVED'])
     notes = serializers.CharField(required=False, allow_blank=True)
 
+    def validate_notes(self, value):
+        if not value:
+            return ''
+        return validate_message(value, min_length=1, max_length=1000)
+
 
 class IncidentAssignSerializer(serializers.Serializer):
     """Serializer for assigning incident to user"""
     assigned_to = serializers.CharField()  # MongoDB ObjectId as string
     notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_notes(self, value):
+        if not value:
+            return ''
+        return validate_message(value, min_length=1, max_length=1000)
 

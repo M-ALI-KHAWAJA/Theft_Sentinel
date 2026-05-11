@@ -1,5 +1,5 @@
 import { useState, useEffect } from 'react';
-import { listCameras, deleteCamera } from '../../api/cameras';
+import { listCameras, deleteCamera, updateCameraStatus } from '../../api/cameras';
 import { useNavigate } from 'react-router-dom';
 import { useRecoilValue } from 'recoil';
 import { authUserState } from '../../store/authStore';
@@ -84,6 +84,18 @@ const List = () => {
     navigate(`/cameras/edit/${camera.id}`);
   };
 
+  const handleStatusChange = async (camera, status) => {
+    try {
+      await updateCameraStatus(camera.id, status);
+      showSuccess(status === 'ONLINE' ? 'Camera activated successfully' : 'Camera turned off successfully');
+      fetchCameras();
+    } catch (error) {
+      const errorMsg = error.response?.data?.error || 'Failed to update camera status';
+      showError(errorMsg);
+      fetchCameras();
+    }
+  };
+
 
   return (
     <div className="space-y-6">
@@ -111,12 +123,12 @@ const List = () => {
         onClose={() => setFullScreenCamera(null)}
       />
       
-      <div className="flex justify-between items-center">
+      <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center gap-3">
         <h1 className="text-3xl font-bold text-white">Control Room</h1>
-        <div className="flex space-x-2">
+        <div className="flex flex-col sm:flex-row gap-2 w-full sm:w-auto">
           <button
             onClick={() => setShowLiveFeeds(!showLiveFeeds)}
-            className={`px-4 py-2 rounded-md transition-colors flex items-center space-x-2 font-semibold ${
+            className={`px-4 py-2 rounded-md transition-colors flex items-center justify-center space-x-2 font-semibold ${
               showLiveFeeds 
                 ? 'bg-status-success text-white hover:bg-status-success/90' 
                 : 'glass border border-dark-border text-dark-text-secondary hover:bg-dark-card'
@@ -128,7 +140,7 @@ const List = () => {
           {isAdmin && (
             <button
               onClick={() => navigate('/cameras/create')}
-              className="px-4 py-2 bg-ai-blue text-white rounded-md hover:bg-ai-blueDark transition-colors flex items-center space-x-2 font-semibold"
+              className="px-4 py-2 bg-ai-blue text-white rounded-md hover:bg-ai-blueDark transition-colors flex items-center justify-center space-x-2 font-semibold"
             >
               <PlusIcon className="h-5 w-5" />
               <span>Add Camera</span>
@@ -184,6 +196,7 @@ const List = () => {
               onViewFeed={handleViewFeed}
               onEdit={isAdmin ? handleEditCamera : null}
               onDelete={isAdmin ? handleDeleteClick : null}
+              onStatusChange={isAdmin ? handleStatusChange : null}
               showFeed={showLiveFeeds}
               showActions={isAdmin}
             />

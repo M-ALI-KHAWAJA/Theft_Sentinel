@@ -4,21 +4,23 @@ from django.contrib.auth import get_user_model
 from rest_framework import serializers
 
 from apps.accounts.serializers import validate_password_strength
+from apps.accounts.validation import (
+    normalize_cnic,
+    normalize_email,
+    normalize_pakistani_phone,
+    normalize_username,
+    validate_address,
+    validate_company_name,
+    validate_name,
+    validate_reason,
+)
 from .models import Tenant, Branch, SuperAdminProfile, BranchPasswordResetRequest
 
 User = get_user_model()
-USERNAME_PATTERN = re.compile(r"^[A-Za-z][A-Za-z0-9_]{2,29}$")
 
 
 def validate_username_format(value):
-    value = (value or "").strip()
-    if not value:
-        raise serializers.ValidationError("Username is required.")
-    if not USERNAME_PATTERN.match(value):
-        raise serializers.ValidationError(
-            "Username must be 3-30 characters, start with a letter, and contain only letters, numbers, and underscores."
-        )
-    return value
+    return normalize_username(value)
 
 
 class SuperAdminExistsSerializer(serializers.Serializer):
@@ -26,10 +28,10 @@ class SuperAdminExistsSerializer(serializers.Serializer):
 
 
 class SuperAdminCreateSerializer(serializers.Serializer):
-    full_name = serializers.CharField(max_length=255)
+    full_name = serializers.CharField(max_length=100)
     username = serializers.CharField(max_length=150)
     email = serializers.EmailField()
-    phone_number = serializers.CharField(max_length=30, allow_blank=True, required=False)
+    phone_number = serializers.CharField(max_length=30)
     password = serializers.CharField(write_only=True, min_length=8)
     partners_count = serializers.IntegerField(min_value=0, max_value=3)
     partner_names = serializers.ListField(
@@ -49,14 +51,43 @@ class SuperAdminCreateSerializer(serializers.Serializer):
         validate_password_strength(value)
         return value
 
+    def validate_full_name(self, value):
+        return validate_name(value)
+
+    def validate_phone_number(self, value):
+        return normalize_pakistani_phone(value, required=True)
+
+    def _reusable_inactive_super_admin(self):
+        email = self.initial_data.get("email") if hasattr(self, "initial_data") else None
+        if not email:
+            return None
+        return User.objects.filter(
+            email__iexact=str(email).strip().lower(),
+            role="SUPER_ADMIN",
+            is_active=False,
+        ).first()
+
     def validate_username(self, value):
         value = validate_username_format(value)
-        if User.objects.filter(username=value, branch__isnull=True).exists():
+        existing = self._reusable_inactive_super_admin()
+        queryset = User.objects.filter(username__iexact=value, branch__isnull=True)
+        if existing is not None:
+            queryset = queryset.exclude(pk=existing.pk)
+        if queryset.exists():
             raise serializers.ValidationError("Username already exists.")
         return value
 
     def validate_email(self, value):
-        if User.objects.filter(email=value).exists():
+        value = normalize_email(value)
+        existing = User.objects.filter(
+            email__iexact=value,
+            role="SUPER_ADMIN",
+            is_active=False,
+        ).first()
+        queryset = User.objects.filter(email__iexact=value)
+        if existing is not None:
+            queryset = queryset.exclude(pk=existing.pk)
+        if queryset.exists():
             raise serializers.ValidationError("Email already exists.")
         return value
 
@@ -68,31 +99,52 @@ class SuperAdminCreateSerializer(serializers.Serializer):
             raise serializers.ValidationError(
                 {"partners_count": "Partner count must match provided names and CNICs."}
             )
+        attrs["partner_names"] = [validate_name(name) for name in names]
+        attrs["partner_cnics"] = [normalize_cnic(cnic) for cnic in cnics]
         return attrs
 
 
 class TenantBranchRegistrationSerializer(serializers.Serializer):
-    company_name = serializers.CharField(max_length=255)
-    branch_name = serializers.CharField(max_length=255)
-    admin_name = serializers.CharField(max_length=255)
+    company_name = serializers.CharField(max_length=150)
+    branch_name = serializers.CharField(max_length=150)
+    admin_name = serializers.CharField(max_length=100)
     username = serializers.CharField(max_length=150)
     cnic = serializers.CharField(max_length=30)
     email = serializers.EmailField()
     phone_number = serializers.CharField(max_length=30)
-    company_address = serializers.CharField(max_length=512)
+    company_address = serializers.CharField(max_length=300)
     password = serializers.CharField(write_only=True, min_length=8)
 
     def validate_password(self, value):
         validate_password_strength(value)
         return value
 
+    def validate_company_name(self, value):
+        return validate_company_name(value)
+
+    def validate_branch_name(self, value):
+        return validate_company_name(value)
+
+    def validate_admin_name(self, value):
+        return validate_name(value)
+
     def validate_username(self, value):
         return validate_username_format(value)
 
+    def validate_cnic(self, value):
+        return normalize_cnic(value)
+
     def validate_email(self, value):
-        if User.objects.filter(email=value).exists():
+        value = normalize_email(value)
+        if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("Email already exists.")
         return value
+
+    def validate_phone_number(self, value):
+        return normalize_pakistani_phone(value, required=True)
+
+    def validate_company_address(self, value):
+        return validate_address(value)
 
 
 class BranchSerializer(serializers.ModelSerializer):
@@ -157,8 +209,8 @@ class SuperAdminProfileSerializer(serializers.ModelSerializer):
 
 
 class SuperAdminProfileUpdateSerializer(serializers.Serializer):
-    full_name = serializers.CharField(max_length=255, required=False)
-    phone_number = serializers.CharField(max_length=30, required=False, allow_blank=True)
+    full_name = serializers.CharField(max_length=100, required=False)
+    phone_number = serializers.CharField(max_length=30, required=False)
     partners_count = serializers.IntegerField(min_value=0, max_value=3, required=False)
     partner_names = serializers.ListField(
         child=serializers.CharField(max_length=255, allow_blank=True), required=False, allow_empty=True
@@ -168,6 +220,10 @@ class SuperAdminProfileUpdateSerializer(serializers.Serializer):
     )
 
     def validate(self, attrs):
+        if "full_name" in attrs:
+            attrs["full_name"] = validate_name(attrs["full_name"])
+        if "phone_number" in attrs:
+            attrs["phone_number"] = normalize_pakistani_phone(attrs["phone_number"], required=True)
         if "partners_count" in attrs:
             count = attrs["partners_count"]
             names = [name.strip() for name in attrs.get("partner_names") or []]
@@ -189,8 +245,8 @@ class SuperAdminProfileUpdateSerializer(serializers.Serializer):
                 errors["partner_cnics"] = blank_cnics
             if errors:
                 raise serializers.ValidationError(errors)
-            attrs["partner_names"] = names
-            attrs["partner_cnics"] = cnics
+            attrs["partner_names"] = [validate_name(name) for name in names]
+            attrs["partner_cnics"] = [normalize_cnic(cnic) for cnic in cnics]
         return attrs
 
 
@@ -212,18 +268,37 @@ class BranchAdminProfileSerializer(serializers.Serializer):
 
 
 class BranchAdminProfileUpdateSerializer(serializers.Serializer):
-    full_name = serializers.CharField(max_length=255)
+    full_name = serializers.CharField(max_length=100)
     email = serializers.EmailField()
     cnic = serializers.CharField(max_length=30)
-    phone_number = serializers.CharField(max_length=30, allow_blank=True, required=False)
-    company_name = serializers.CharField(max_length=255)
-    branch_name = serializers.CharField(max_length=255)
-    address = serializers.CharField(max_length=512, allow_blank=True, required=False)
+    phone_number = serializers.CharField(max_length=30)
+    company_name = serializers.CharField(max_length=150)
+    branch_name = serializers.CharField(max_length=150)
+    address = serializers.CharField(max_length=300)
+
+    def validate_full_name(self, value):
+        return validate_name(value)
+
+    def validate_cnic(self, value):
+        return normalize_cnic(value)
+
+    def validate_phone_number(self, value):
+        return normalize_pakistani_phone(value, required=True)
+
+    def validate_company_name(self, value):
+        return validate_company_name(value)
+
+    def validate_branch_name(self, value):
+        return validate_company_name(value)
+
+    def validate_address(self, value):
+        return validate_address(value)
 
     def validate_email(self, value):
+        value = normalize_email(value)
         request = self.context.get("request")
         user = getattr(request, "user", None)
-        qs = User.objects.filter(email=value)
+        qs = User.objects.filter(email__iexact=value)
         if user and getattr(user, "pk", None):
             qs = qs.exclude(pk=user.pk)
         if qs.exists():
@@ -234,10 +309,19 @@ class BranchAdminProfileUpdateSerializer(serializers.Serializer):
 class SuperAdminForgotPasswordSerializer(serializers.Serializer):
     email = serializers.EmailField()
 
+    def validate_email(self, value):
+        return normalize_email(value)
+
 
 class BranchAdminResetRequestCreateSerializer(serializers.Serializer):
     email = serializers.EmailField()
     reason = serializers.CharField()
+
+    def validate_email(self, value):
+        return normalize_email(value)
+
+    def validate_reason(self, value):
+        return validate_reason(value)
 
 
 class BranchPasswordResetRequestSerializer(serializers.ModelSerializer):

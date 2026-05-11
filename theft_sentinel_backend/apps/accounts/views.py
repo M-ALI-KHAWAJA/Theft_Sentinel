@@ -291,7 +291,7 @@ class ForgotPasswordView(views.APIView):
         email = serializer.validated_data['email']
         
         try:
-            user = User.objects.get(email=email)
+            user = User.objects.get(email__iexact=email)
             
             if not user.is_active:
                 # Log inactive account attempt

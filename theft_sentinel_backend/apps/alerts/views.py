@@ -10,12 +10,18 @@ RBAC Rules:
 from rest_framework import generics, status, views
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 from django.utils import timezone
 from datetime import timedelta
+import logging
 
 from .models import Alert
 from .serializers import AlertSerializer, AlertCreateSerializer, AlertAcknowledgeSerializer
+from .serializers import VALID_ALERT_SEVERITIES
+from .services import dispatch_theft_alert_sms
 from apps.accounts.permissions import IsAdminOrIncharge, CanViewAlerts, CanDeleteAlerts
+
+logger = logging.getLogger(__name__)
 
 
 class AlertListCreateView(generics.ListCreateAPIView):
@@ -75,6 +81,14 @@ class AlertListCreateView(generics.ListCreateAPIView):
         alert_type = self.request.query_params.get('alert_type', None)
         if alert_type:
             queryset = queryset.filter(alert_type=alert_type)
+
+        # Filter by severity (backend supports MEDIUM and HIGH only)
+        severity = self.request.query_params.get('severity', None)
+        if severity:
+            severity = severity.strip().upper()
+            if severity not in VALID_ALERT_SEVERITIES:
+                raise ValidationError({'severity': ['Severity must be MEDIUM or HIGH.']})
+            queryset = queryset.filter(severity__iexact=severity)
         
         # Filter by date range (only for Admin & Security In-Charge)
         if self.request.user.role in ['ADMIN', 'SECURITY_INCHARGE']:
@@ -87,6 +101,13 @@ class AlertListCreateView(generics.ListCreateAPIView):
                 queryset = queryset.filter(timestamp__lte=end_date)
         
         return queryset.order_by('-timestamp')
+
+    def perform_create(self, serializer):
+        alert = serializer.save()
+        try:
+            dispatch_theft_alert_sms(alert, async_send=True)
+        except Exception:
+            logger.exception("Failed to dispatch Twilio SMS for alert %s", alert.id)
 
 
 class AlertDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -170,7 +191,11 @@ class AlertAcknowledgeView(views.APIView):
         User = get_user_model()
         
         try:
-            alert = Alert.objects.get(pk=pk)
+            queryset = Alert.objects.select_related('camera_id').all()
+            user_branch = getattr(request.user, "branch", None)
+            if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+                queryset = queryset.filter(camera_id__branch=user_branch)
+            alert = queryset.get(pk=pk)
         except Alert.DoesNotExist:
             return Response(
                 {'error': 'Alert not found'},
@@ -187,7 +212,11 @@ class AlertAcknowledgeView(views.APIView):
             comment = serializer.validated_data.get('comment', '')
             
             try:
-                guard = User.objects.get(email=guard_email, role='SECURITY_GUARD')
+                guard_qs = User.objects.filter(email__iexact=guard_email, role='SECURITY_GUARD', is_active=True)
+                user_branch = getattr(request.user, "branch", None)
+                if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+                    guard_qs = guard_qs.filter(branch=user_branch)
+                guard = guard_qs.get()
                 # Create incident with status ASSIGNED
                 incident = Incident.objects.create(
                     alert_id=alert,

@@ -4,6 +4,7 @@ import { createFeedback } from '../../api/feedback';
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
+import { validateMessage } from '../../utils/validation';
 
 const Create = () => {
   const navigate = useNavigate();
@@ -23,12 +24,17 @@ const Create = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const messageCheck = validateMessage(formData.message);
+    if (!messageCheck.valid) {
+      showError(messageCheck.message);
+      return;
+    }
     setLoading(true);
 
     try {
       await createFeedback({
         type: formData.type,
-        message: formData.message
+        message: formData.message.trim()
       });
       showSuccess('Feedback submitted successfully');
       setTimeout(() => {

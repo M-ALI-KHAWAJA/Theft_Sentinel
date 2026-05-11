@@ -6,6 +6,7 @@ import { login as loginAPI } from '../../api/auth';
 import { LockClosedIcon, EyeIcon, EyeSlashIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
+import { validateRequired } from '../../utils/validation';
 
 const Login = () => {
   const navigate = useNavigate();
@@ -31,10 +32,19 @@ const Login = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const loginCheck = validateRequired(formData.username, 'Email or username is required.');
+    const passwordCheck = validateRequired(formData.password, 'Password is required.');
+    if (!loginCheck.valid || !passwordCheck.valid) {
+      showError(!loginCheck.valid ? loginCheck.message : passwordCheck.message);
+      return;
+    }
     setLoading(true);
 
     try {
-      const response = await loginAPI(formData);
+      const response = await loginAPI({
+        username: formData.username.trim(),
+        password: formData.password,
+      });
       const { access, refresh, user } = response.data;
 
       // Store tokens

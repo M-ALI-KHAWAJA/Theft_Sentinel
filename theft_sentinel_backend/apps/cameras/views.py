@@ -4,7 +4,9 @@ Camera Views
 from rest_framework import generics, status, views
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
+from rest_framework.exceptions import ValidationError
 from django.http import StreamingHttpResponse, JsonResponse
+from django.utils import timezone
 import cv2
 import threading
 import time
@@ -12,6 +14,7 @@ import requests
 
 from .models import Camera
 from .serializers import CameraSerializer, CameraCreateSerializer, CameraStatusUpdateSerializer
+from .services import test_camera_feed
 from apps.accounts.permissions import CanManageCameras, CanViewCameraFeeds
 
 
@@ -52,6 +55,14 @@ class CameraListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         # Ensure camera is linked to creator's branch (Super Admin may omit)
         user_branch = getattr(self.request.user, "branch", None)
+        candidate = Camera(**serializer.validated_data)
+        if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            candidate.branch = user_branch
+        if serializer.validated_data.get("status") == "ONLINE":
+            if not test_camera_feed(candidate):
+                raise ValidationError({"error": "Camera feed is unavailable. Unable to activate camera."})
+            serializer.save(branch=candidate.branch, last_feed_timestamp=timezone.now())
+            return
         if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
             serializer.save(branch=user_branch)
             return
@@ -75,6 +86,19 @@ class CameraDetailView(generics.RetrieveUpdateDestroyAPIView):
             qs = qs.filter(branch=user_branch)
         return qs
 
+    def perform_update(self, serializer):
+        requested_status = serializer.validated_data.get("status")
+        if requested_status == "ONLINE":
+            candidate = serializer.instance
+            for field in ("name", "rtsp_url", "location", "zone"):
+                if field in serializer.validated_data:
+                    setattr(candidate, field, serializer.validated_data[field])
+            if not test_camera_feed(candidate):
+                raise ValidationError({"error": "Camera feed is unavailable. Unable to activate camera."})
+            serializer.save(last_feed_timestamp=timezone.now())
+            return
+        serializer.save()
+
 
 class CameraStatusUpdateView(views.APIView):
     """
@@ -82,10 +106,17 @@ class CameraStatusUpdateView(views.APIView):
     Only Admin can update camera status
     """
     permission_classes = [IsAuthenticated, CanManageCameras]
+
+    def _get_camera(self, request, pk):
+        qs = Camera.objects.all()
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            qs = qs.filter(branch=user_branch)
+        return qs.get(pk=pk)
     
     def patch(self, request, pk):
         try:
-            camera = Camera.objects.get(pk=pk)
+            camera = self._get_camera(request, pk)
         except Camera.DoesNotExist:
             return Response(
                 {'error': 'Camera not found'},
@@ -94,8 +125,23 @@ class CameraStatusUpdateView(views.APIView):
         
         serializer = CameraStatusUpdateSerializer(data=request.data)
         if serializer.is_valid():
-            camera.status = serializer.validated_data['status']
-            camera.save()
+            requested_status = serializer.validated_data['status']
+
+            if requested_status == 'ONLINE':
+                if not test_camera_feed(camera):
+                    if camera.status != 'OFFLINE':
+                        camera.status = 'OFFLINE'
+                        camera.save(update_fields=['status'])
+                    return Response(
+                        {'error': 'Camera feed is unavailable. Unable to activate camera.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+                camera.status = 'ONLINE'
+                camera.last_feed_timestamp = timezone.now()
+                camera.save(update_fields=['status', 'last_feed_timestamp'])
+            else:
+                camera.status = 'OFFLINE'
+                camera.save(update_fields=['status'])
             return Response(CameraSerializer(camera).data, status=status.HTTP_200_OK)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -350,4 +396,3 @@ class CameraFeedView(views.APIView):
             generate_frames(),
             content_type='multipart/x-mixed-replace; boundary=frame'
         )
-

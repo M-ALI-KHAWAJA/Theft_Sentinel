@@ -317,8 +317,7 @@ class ContinuousMonitor:
         """Create alert for theft detection"""
         try:
             from apps.alerts.models import Alert
-            from django.contrib.auth import get_user_model
-            from apps.mobile.services import NotificationService
+            from apps.alerts.services import dispatch_theft_alert_sms
             
             metadata = {
                 'confidence': result['confidence'],
@@ -344,24 +343,9 @@ class ContinuousMonitor:
             # ── Branch-scoped Twilio alert destination (dynamic per branch) ──
             # Best-effort, non-blocking; never impacts AI pipeline.
             try:
-                branch = getattr(camera, "branch", None)
-                phone = getattr(branch, "admin_phone", "") if branch else ""
-                if phone:
-                    User = get_user_model()
-                    branch_admin = User.objects.filter(role="ADMIN", branch=branch, is_active=True).first()
-                    if branch_admin:
-                        msg = (
-                            f"THEFT ALERT: {camera.location} ({camera.name}) "
-                            f"Severity: {alert.severity}  Time: {alert.timestamp.strftime('%Y-%m-%d %H:%M:%S')}"
-                        )
-                        threading.Thread(
-                            target=NotificationService.send_sms,
-                            args=(branch_admin, phone, msg),
-                            daemon=True,
-                            name=f"twilio-alert-{alert.id}",
-                        ).start()
+                dispatch_theft_alert_sms(alert, async_send=True)
             except Exception:
-                pass
+                logger.exception("Failed to dispatch Twilio SMS for alert %s", alert.id)
             return alert
             
         except Exception as e:
