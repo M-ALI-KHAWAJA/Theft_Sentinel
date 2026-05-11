@@ -18,6 +18,7 @@ import threading
 import logging
 from collections import deque
 from typing import Dict, Optional
+from urllib.parse import urlparse
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
@@ -121,49 +122,108 @@ class ContinuousMonitor:
             'last_result': self.last_result,
         }
     
-    def _capture_loop(self):
-        """Dedicated thread to read frames at full camera FPS.
-
-        TASK 1+2: VideoCapture is opened with cv2.CAP_FFMPEG so that the
-        OPENCV_FFMPEG_CAPTURE_OPTIONS env-var (UDP transport, nobuffer, low_delay)
-        is honoured.  All reconnect / error-handling logic is preserved.
+    def _open_capture_for_url(self, url: str) -> Optional[cv2.VideoCapture]:
         """
-        processed_url = self._prepare_url(self.rtsp_url)
+        Open a VideoCapture using the correct backend for the URL scheme.
 
-        # Verify the env-var is present in THIS process before opening the stream.
-        # If it shows NOT SET the env-var did not propagate from apps.py (startup bug).
-        logger.warning(
-            f"[RTSP DEBUG] PID={os.getpid()} | camera={self.camera_id} | "
-            f"OPENCV_FFMPEG_CAPTURE_OPTIONS="
-            f"{os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'NOT SET')}"
-        )
-        logger.info(
-            f"🚀 Using low-latency UDP RTSP mode for camera {self.camera_id} "
-            f"[rtsp_transport=udp, fflags=nobuffer, flags=low_delay, max_delay=0]"
-        )
+          RTSP/RTSPS  → cv2.VideoCapture(url, CAP_FFMPEG)
+                         OPENCV_FFMPEG_CAPTURE_OPTIONS (TCP, stimeout) apply.
+          HTTP/HTTPS  → cv2.VideoCapture(url)
+                         No FFmpeg RTSP options — plain auto-select backend.
 
-        # Explicit CAP_FFMPEG backend so env-var options are applied
-        self.cap = cv2.VideoCapture(processed_url, cv2.CAP_FFMPEG)
+        isOpened() is ALWAYS checked BEFORE getBackendName().
+        Returns a ready VideoCapture, or None on failure.
+        """
+        scheme = urlparse(url).scheme.lower()
 
-        if not self.cap.isOpened():
-            logger.error(f"Failed to open stream: {processed_url}")
-            self.is_running = False
-            return
-
-        # Log which backend was actually selected after open
-        _backend = self.cap.getBackendName()
-        logger.warning(
-            f"[RTSP DEBUG] camera={self.camera_id} | Backend={_backend} | "
-            f"PID={os.getpid()} | URL={processed_url}"
-        )
-        if _backend != "FFMPEG":
-            logger.warning(
-                f"⚠️ Non-FFmpeg backend '{_backend}' — transport will NOT use UDP env-var"
+        if scheme in ("rtsp", "rtsps"):
+            logger.info(
+                "[ContinuousMonitor] Opening RTSP stream for camera %s: %s",
+                self.camera_id, url,
             )
-        logger.info(f"✅ Stream opened successfully for camera {self.camera_id}")
+            cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+        elif scheme in ("http", "https"):
+            logger.info(
+                "[ContinuousMonitor] Opening HTTP stream for camera %s: %s",
+                self.camera_id, url,
+            )
+            cap = cv2.VideoCapture(url)
+        else:
+            logger.error(
+                "[ContinuousMonitor] Unsupported protocol '%s' for camera %s: %s",
+                scheme, self.camera_id, url,
+            )
+            return None
+
+        # ── CRITICAL: isOpened() BEFORE getBackendName() ──────────────────
+        # getBackendName() internally asserts api != 0 and crashes when the
+        # VideoCapture failed to open.
+        if not cap.isOpened():
+            logger.error(
+                "[ContinuousMonitor] Failed to open %s stream for camera %s: %s",
+                scheme.upper(), self.camera_id, url,
+            )
+            cap.release()
+            return None
+
+        # Safe to query backend only after isOpened() returned True
+        backend = cap.getBackendName()
+        if scheme in ("rtsp", "rtsps") and backend != "FFMPEG":
+            logger.warning(
+                "[ContinuousMonitor] Non-FFmpeg backend '%s' for RTSP camera %s",
+                backend, self.camera_id,
+            )
+        logger.info(
+            "[ContinuousMonitor] Stream opened for camera %s (scheme=%s backend=%s)",
+            self.camera_id, scheme, backend,
+        )
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+        return cap
+
+    def _capture_loop(self):
+        """
+        Dedicated thread that reads frames at the camera's native FPS.
+
+        • Uses the URL AS-IS from the database — no mutation.
+        • Detects protocol (RTSP vs HTTP) from the URL scheme.
+        • Applies exponential back-off on reconnect (2→30s).
+        • Releases the old VideoCapture before opening a new one.
+        • isOpened() is always checked before getBackendName().
+        """
+        url = self.rtsp_url   # raw DB value, never modified
+        reconnect_attempt = 0
+
+        # ── Initial connection ────────────────────────────────────────────
+        self.cap = self._open_capture_for_url(url)
+        if self.cap is None:
+            logger.error(
+                "[ContinuousMonitor] Initial open failed for camera %s — "
+                "entering reconnect loop",
+                self.camera_id,
+            )
+            reconnect_attempt = 1   # start back-off from attempt 1
 
         while self.is_running:
             try:
+                # ── Guard: reconnect if cap is None (failed open or read error) ──
+                if self.cap is None:
+                    delay = min(2.0 ** reconnect_attempt, 30.0)
+                    self._reconnect_count += 1
+                    logger.warning(
+                        "[ContinuousMonitor] Reconnect #%d for camera %s in %.1fs "
+                        "(backoff attempt %d)",
+                        self._reconnect_count, self.camera_id,
+                        delay, reconnect_attempt,
+                    )
+                    time.sleep(delay)
+                    self.cap = self._open_capture_for_url(url)
+                    if self.cap is None:
+                        reconnect_attempt += 1
+                    else:
+                        reconnect_attempt = 0   # reset on success
+                        self.error_count = 0
+                    continue
+
                 ret, raw_frame = self.cap.read()
 
                 if not ret or raw_frame is None or getattr(raw_frame, "size", 0) == 0:
@@ -186,19 +246,21 @@ class ContinuousMonitor:
                     # Reconnect after too many consecutive errors
                     if self.error_count > 10:
                         self._reconnect_count += 1
+                        delay = min(2.0 ** reconnect_attempt, 30.0)
                         logger.info(
-                            f"🔄 RTSP reconnect #{self._reconnect_count} for camera "
-                            f"{self.camera_id} (too many consecutive read errors)"
+                            "[ContinuousMonitor] Triggering reconnect #%d for camera %s "
+                            "(after %d read errors) — waiting %.1fs",
+                            self._reconnect_count, self.camera_id,
+                            self.error_count, delay,
                         )
-                        self.cap.release()
-                        time.sleep(2)
-                        # TASK 1: keep CAP_FFMPEG on reconnect so options still apply
-                        self.cap = cv2.VideoCapture(processed_url, cv2.CAP_FFMPEG)
+                        # ── Release OLD capture BEFORE creating new one ───────
+                        if self.cap is not None:
+                            self.cap.release()
+                            self.cap = None
                         self.error_count = 0
-                        logger.info(
-                            f"✅ Reconnected stream for camera {self.camera_id} "
-                            f"[reconnect #{self._reconnect_count}]"
-                        )
+                        reconnect_attempt += 1
+                        # Back-off sleep happens at top of loop via the None guard
+
 
                     time.sleep(0.1)
                     continue
@@ -407,14 +469,16 @@ class ContinuousMonitor:
         
         logger.info(f"Monitoring loop ended for camera {self.camera_id}")
     
-    def _prepare_url(self, rtsp_url: str) -> str:
-        """Convert camera URL to stream URL"""
-        # If it's an HTTP URL (IP Webcam) without a specific endpoint, add /video
-        if rtsp_url.startswith('http://'):
-            if rtsp_url.split('/')[-1].startswith(':') or \
-               (rtsp_url.count('/') == 2 and (':8080' in rtsp_url or ':4747' in rtsp_url)):
-                return rtsp_url.rstrip('/') + '/video'
-        return rtsp_url
+    def _prepare_url(self, stream_url: str) -> str:
+        """
+        Return the stream URL unchanged.
+
+        Previously this method appended '/video' to HTTP URLs, which caused
+        broken RTSP conversions (e.g. http://host:8080 → rtsp://host:8080/cam1).
+        Protocol detection and URL routing now happen in _open_capture_for_url().
+        This method is retained for call-site compatibility but is a no-op.
+        """
+        return stream_url
     
     def _save_result(self, result: Dict):
         """Save inference result to database"""

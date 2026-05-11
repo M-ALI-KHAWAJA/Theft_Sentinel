@@ -58,8 +58,8 @@ class Config:
     # ──────────────────────────────────────────────
     # Cross-Camera Matching
     # ──────────────────────────────────────────────
-    MATCH_THRESHOLD_SAME_CAM = 0.50
-    MATCH_THRESHOLD_DIFF_CAM = 0.30
+    MATCH_THRESHOLD_SAME_CAM = 0.70
+    MATCH_THRESHOLD_DIFF_CAM = 0.40
     MATCH_TEMPORAL_WINDOW    = 30.0
     MATCH_MIN_EMBEDDINGS     = 3
 
@@ -82,7 +82,7 @@ class Config:
     X3D_MODEL_PATH = os.path.join(_BASE, "x3d_theft_model.pth")   # path to your trained .pth file
     X3D_CLIP_FRAMES    = 120   # frames to collect before inference (120 ≈ 4 sec @ 30fps)
     X3D_INFERENCE_EVERY = 30   # run X3D every N frames per person
-    X3D_THEFT_THRESHOLD = 0.20 # probability above which we raise an alert
+    X3D_THEFT_THRESHOLD = 0.0 # probability above which we raise an alert
     X3D_SUSPICIOUS_THRESHOLD = 0.50  # show orange label above this
 
     # ──────────────────────────────────────────────

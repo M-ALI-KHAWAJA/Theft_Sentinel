@@ -7,6 +7,7 @@ import base64
 import numpy as np
 from typing import Optional, Tuple
 import logging
+from urllib.parse import urlparse
 
 logger = logging.getLogger(__name__)
 
@@ -60,72 +61,82 @@ def encode_frame_to_base64(frame: np.ndarray, format: str = '.jpg', quality: int
         return None
 
 
-def capture_frame_from_rtsp(rtsp_url: str, timeout: int = 5) -> Optional[np.ndarray]:
+def capture_frame_from_rtsp(stream_url: str, timeout: int = 5) -> Optional[np.ndarray]:
     """
-    Capture a single frame from RTSP stream or IP Webcam
-    For IP Webcam: Database has base URL, but we need /video endpoint for streaming
+    Capture a single frame from any camera stream URL.
+
+    Protocol is detected from the URL scheme:
+      rtsp/rtsps  → cv2.VideoCapture(url, CAP_FFMPEG)
+      http/https  → cv2.VideoCapture(url)   (no FFmpeg RTSP options)
+
+    The URL is used AS-IS — never mutated or extended.
+    isOpened() is ALWAYS checked before getBackendName().
     """
     cap = None
     try:
-        # Convert IP Webcam base URL to video stream URL
-        processed_url = rtsp_url
-        
-        # If it's an HTTP URL (IP Webcam) without a specific endpoint, add /video
-        if rtsp_url.startswith('http://'):
-            # Check if URL ends with port only (like :8080 or :4747)
-            if rtsp_url.split('/')[-1].startswith(':') or \
-               (rtsp_url.count('/') == 2 and (':8080' in rtsp_url or ':4747' in rtsp_url)):
-                # It's a base URL like http://192.168.10.33:8080
-                # Need to add /video for the actual stream
-                processed_url = rtsp_url.rstrip('/') + '/video'
-                logger.info(f"Converted IP Webcam URL: {rtsp_url} -> {processed_url}")
-        
-        logger.info(f"Attempting to capture from: {processed_url[:50]}...")
+        scheme = urlparse(stream_url).scheme.lower()
+        logger.info(
+            "[frame_utils] Capturing from %s (scheme=%s)",
+            stream_url[:60], scheme,
+        )
 
-        # TASK 1: Explicit CAP_FFMPEG so OPENCV_FFMPEG_CAPTURE_OPTIONS (UDP transport)
-        # is honoured. Without this, Windows auto-selection probes MSMF first, which
-        # sends a TCP RTSP SETUP to MediaMTX before FFmpeg sees the env-var.
-        cap = cv2.VideoCapture(processed_url, cv2.CAP_FFMPEG)
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimize latency
+        if scheme in ("rtsp", "rtsps"):
+            cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
+        elif scheme in ("http", "https"):
+            cap = cv2.VideoCapture(stream_url)
+        else:
+            logger.error(
+                "[frame_utils] Unsupported protocol '%s' for URL: %s",
+                scheme, stream_url,
+            )
+            return None
 
-        # Set timeout
+        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
         cap.set(cv2.CAP_PROP_OPEN_TIMEOUT_MSEC, timeout * 1000)
         cap.set(cv2.CAP_PROP_READ_TIMEOUT_MSEC, timeout * 1000)
 
-        # TASK 4: Log which backend was selected and warn if not FFMPEG
+        # ── CRITICAL: isOpened() BEFORE getBackendName() ──────────────────
+        # getBackendName() asserts api != 0 internally — calling it on a
+        # failed VideoCapture causes cv2.error (-215:Assertion failed).
+        if not cap.isOpened():
+            logger.error(
+                "[frame_utils] Failed to open %s stream: %s",
+                scheme.upper(), stream_url,
+            )
+            return None
+
+        # Safe to call getBackendName() only after isOpened() returned True
         backend = cap.getBackendName()
-        if backend != "FFMPEG":
+        if scheme in ("rtsp", "rtsps") and backend != "FFMPEG":
             logger.warning(
-                f"⚠️ Non-FFmpeg backend detected in capture_frame_from_rtsp: "
-                f"{backend} — transport may default to TCP"
+                "[frame_utils] Non-FFmpeg backend '%s' for RTSP stream: %s",
+                backend, stream_url,
             )
         else:
-            logger.debug(f"📡 capture_frame_from_rtsp backend=FFMPEG (UDP): {processed_url[:50]}...")
-        
-        if not cap.isOpened():
-            logger.error(f"Failed to open stream: {processed_url}")
-            logger.error("Possible reasons: Invalid URL, camera offline, network issue, or wrong credentials")
-            return None
-        
-        # Try to read frame
+            logger.debug(
+                "[frame_utils] Opened %s stream with backend=%s",
+                scheme.upper(), backend,
+            )
+
         ret, frame = cap.read()
-        
-        if not ret:
-            logger.error(f"Failed to read frame from stream: {processed_url}")
-            logger.error("Camera may be streaming but no frame received. Check stream format.")
+
+        if not ret or frame is None:
+            logger.error(
+                "[frame_utils] No frame received from %s: %s",
+                scheme.upper(), stream_url,
+            )
             return None
-            
-        if frame is None:
-            logger.error(f"Frame is None from stream: {processed_url}")
-            return None
-        
-        logger.info(f"✅ Successfully captured frame: {frame.shape}")
+
+        logger.info("[frame_utils] Captured frame %s from %s", frame.shape, stream_url[:40])
         return frame
-        
-    except Exception as e:
-        logger.error(f"Exception capturing frame: {str(e)}", exc_info=True)
+
+    except Exception as exc:
+        logger.error(
+            "[frame_utils] Exception capturing from %s: %s",
+            stream_url, exc, exc_info=True,
+        )
         return None
-        
+
     finally:
         if cap is not None:
             cap.release()

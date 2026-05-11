@@ -26,15 +26,20 @@ import os
 #   analyzeduration;0    → skip stream analysis delay at open
 #   probesize;32         → minimal probe to speed up stream open
 #   loglevel;48          → AV_LOG_DEBUG — shows transport negotiation in stderr
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
-    "rtsp_transport;udp|"
-    "fflags;nobuffer|"
-    "flags;low_delay|"
-    "max_delay;0|"
-    "buffer_size;102400|"
-    "analyzeduration;0|"
-    "probesize;32|"
-    "loglevel;48"
+# os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+#     "rtsp_transport;udp|"
+#     "buffer_size;524288|"
+#     "max_delay;200000|"
+#     "reorder_queue_size;32|"
+#     "stimeout;5000000"
+# )
+
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ( 
+    "rtsp_transport;tcp|" 
+    "buffer_size;1024000|" 
+    "max_delay;500000|"
+    "reorder_queue_size;32|" 
+    "stimeout;5000000" 
 )
 
 # Enables OpenCV's own backend-selection debug log (prints to stderr)

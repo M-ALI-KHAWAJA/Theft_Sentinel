@@ -5,10 +5,12 @@ from rest_framework import generics, status, views
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.http import StreamingHttpResponse, JsonResponse
-import cv2
-import threading
-import time
+import logging
 import requests
+
+from .stream_manager import stream_manager
+
+logger = logging.getLogger(__name__)
 
 from .models import Camera
 from .serializers import CameraSerializer, CameraCreateSerializer, CameraStatusUpdateSerializer
@@ -152,247 +154,116 @@ class CameraStreamURLView(views.APIView):
 
 class CameraFeedView(views.APIView):
     """
-    Stream camera feed from RTSP URL
-    All authenticated users can view real-time camera feeds
-    (Admin, Security In-Charge, Security Guard)
+    Stream MJPEG camera feed using a SINGLE persistent RTSP connection.
+
+    Architecture:
+        RTSP Camera
+            ↓
+        CameraStreamManager (one VideoCapture per camera, daemon reader thread)
+            ↓
+        Shared latest-frame cache  (thread-safe)
+            ↓
+        Multiple MJPEG clients  ← this view
+
+    No new cv2.VideoCapture is ever opened per HTTP request.  All clients
+    for the same camera read from the same shared frame buffer.
     """
-    permission_classes = []  # Allow unauthenticated for img tag, but check token manually
-    
+    permission_classes = []  # Allow unauthenticated for <img> tags; add JWT check if needed
+
     def get(self, request, pk):
-        # Optional: Check for token in query parameter for production security
-        # token = request.GET.get('token')
-        # if token:
-        #     # Validate JWT token here
-        #     pass
-        
         try:
             camera = Camera.objects.get(pk=pk)
         except Camera.DoesNotExist:
-            return JsonResponse(
-                {'error': 'Camera not found'},
-                status=404
-            )
-        
-        # Check if camera is online
+            return JsonResponse({'error': 'Camera not found'}, status=404)
+
+        # Camera must be marked ONLINE before we attempt streaming
         if camera.status != 'ONLINE':
+            logger.warning(
+                "[CameraFeedView] Camera %s is %s — rejecting stream request",
+                camera.name, camera.status,
+            )
             return JsonResponse(
                 {'error': 'Camera is offline', 'status': camera.status},
-                status=503
+                status=503,
             )
-        
-        # Check if we should use direct proxy mode
-        use_proxy = request.GET.get('proxy', 'false').lower() == 'true'
-        
-        # For HTTP/HTTPS streams, redirect directly to camera (zero latency)
-        if not use_proxy and (camera.rtsp_url.startswith('http://') or camera.rtsp_url.startswith('https://')):
-            # Return direct camera URL for zero-latency streaming
-            camera_url = camera.rtsp_url.rstrip('/') + '/video'
-            print(f"[Camera Feed] Redirecting to direct stream: {camera_url}")
-            
-            from django.http import HttpResponseRedirect
-            return HttpResponseRedirect(camera_url)
-        
-        def generate_frames():
-            """Generate frames from RTSP/HTTP stream"""
-            stream_url = camera.rtsp_url
-            
-            # Check if it's an HTTP/HTTPS stream (like IP Webcam)
-            if stream_url.startswith('http://') or stream_url.startswith('https://'):
-                # Try direct HTTP streaming first (for IP Webcam, DroidCam, etc.)
-                try:
-                    # Common endpoints for mobile camera apps
-                    possible_endpoints = [
-                        '/video',
-                        '/videofeed',
-                        '/shot.jpg',
-                        '/photoaf.jpg',
-                        ''  # Try base URL
-                    ]
-                    
-                    for endpoint in possible_endpoints:
-                        try:
-                            test_url = stream_url.rstrip('/') + endpoint
-                            # Optimize connection for low latency
-                            response = requests.get(
-                                test_url, 
-                                stream=True, 
-                                timeout=5,
-                                headers={
-                                    'Connection': 'keep-alive',
-                                    'Cache-Control': 'no-cache, no-store, must-revalidate',
-                                    'Pragma': 'no-cache'
-                                }
-                            )
-                            
-                            if response.status_code == 200:
-                                content_type = response.headers.get('Content-Type', '')
-                                
-                                # Check if it's MJPEG stream (priority)
-                                if 'multipart' in content_type:
-                                    print(f"[Camera Feed] Streaming MJPEG from {test_url}")
-                                    # Proxy the MJPEG stream directly with optimizations
-                                    try:
-                                        # Use larger chunk size for better performance
-                                        # Disable buffering to reduce latency
-                                        for chunk in response.iter_content(chunk_size=8192, decode_unicode=False):
-                                            if chunk:
-                                                yield chunk
-                                    except Exception as e:
-                                        print(f"[Camera Feed] Stream interrupted: {str(e)}")
-                                    return
-                                    
-                        except Exception as e:
-                            continue
-                    
-                    # If no MJPEG stream found, try single image endpoints
-                    for endpoint in possible_endpoints:
-                        try:
-                            test_url = stream_url.rstrip('/') + endpoint
-                            response = requests.get(test_url, timeout=5)
-                            
-                            if response.status_code == 200 and 'image' in response.headers.get('Content-Type', ''):
-                                print(f"[Camera Feed] Using snapshot mode from {test_url}")
-                                # Single image endpoint - refresh periodically
-                                while True:
-                                    try:
-                                        img_response = requests.get(test_url, timeout=5)
-                                        if img_response.status_code == 200:
-                                            yield (b'--frame\r\n'
-                                                   b'Content-Type: image/jpeg\r\n\r\n' + 
-                                                   img_response.content + b'\r\n')
-                                            time.sleep(0.1)  # 10 FPS
-                                        else:
-                                            break
-                                    except:
-                                        break
-                                return
-                        except:
-                            continue
-                    
-                    # If HTTP streaming failed, fall back to OpenCV
-                    print(f"[Camera Feed] HTTP streaming failed, trying OpenCV for {stream_url}")
-                    
-                except Exception as e:
-                    print(f"[Camera Feed] HTTP stream error: {str(e)}")
-            
-            # Fall back to OpenCV for RTSP or if HTTP failed
-            cap = None
-            retry_count = 0
-            max_retries = 3
 
-            while retry_count < max_retries:
-                # RTSP transport env-vars are initialised globally in apps/ai_engine/apps.py.
-                # Log here to confirm they are visible in this process/thread before open.
-                import os as _os
-                print(
-                    f"[RTSP DEBUG] PID={_os.getpid()} | CameraFeedView | camera={camera.name} | "
-                    f"OPENCV_FFMPEG_CAPTURE_OPTIONS="
-                    f"{_os.environ.get('OPENCV_FFMPEG_CAPTURE_OPTIONS', 'NOT SET')}"
-                )
+        # HTTP/HTTPS cameras (IP Webcam, DroidCam) — proxy the native MJPEG
+        # stream directly without touching cv2.VideoCapture at all.
+        rtsp_url = camera.rtsp_url
+        if rtsp_url.startswith('http://') or rtsp_url.startswith('https://'):
+            return self._proxy_http_stream(camera, rtsp_url, request)
 
-                # Explicit CAP_FFMPEG so OPENCV_FFMPEG_CAPTURE_OPTIONS (UDP
-                # transport, nobuffer, low_delay) is honoured. Without this flag,
-                # Windows probes MSMF first — MSMF sends a TCP RTSP SETUP to
-                # MediaMTX before FFmpeg ever reads the env-var, producing
-                # "[RTSP] session is reading from path '...', with TCP" in the logs.
-                cap = cv2.VideoCapture(stream_url, cv2.CAP_FFMPEG)
-
-                # Log backend and warn if not FFmpeg
-                _backend = cap.getBackendName()
-                print(
-                    f"[RTSP DEBUG] camera={camera.name} | Backend={_backend} | PID={_os.getpid()}"
-                )
-                if _backend != "FFMPEG":
-                    print(
-                        f"[Camera Feed] ⚠️ Non-FFmpeg backend={_backend} for {stream_url} "
-                        f"— transport may default to TCP"
-                    )
-                else:
-                    print(
-                        f"[Camera Feed] 📡 backend=FFMPEG (UDP) for {camera.name}: {stream_url}"
-                    )
-
-                try:
-                    if not cap.isOpened():
-                        retry_count += 1
-                        cap.release()
-                        cap = None
-                        time.sleep(1)
-                        continue
-
-                    # Optimize for low latency
-                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer
-                    cap.set(cv2.CAP_PROP_FPS, 30)        # Set FPS
-
-                    # For RTSP streams, reduce latency
-                    if stream_url.startswith('rtsp://'):
-                        cap.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc(*'MJPG'))
-
-                    print(f"[Camera Feed] OpenCV connected to {stream_url}")
-
-                    frame_count = 0
-
-                    # TASK 3: Wrap inner streaming loop in try/finally so cap.release()
-                    # is guaranteed even when the browser disconnects mid-stream (which
-                    # causes the generator to be garbage-collected without a break),
-                    # preventing zombie RTSP sessions in MediaMTX.
-                    try:
-                        while True:
-                            success, frame = cap.read()
-
-                            if not success:
-                                # Grab multiple frames to clear any stale buffer
-                                for _ in range(5):
-                                    cap.grab()
-                                continue
-
-                            frame_count += 1
-
-                            # Skip frames if buffer is building up (optional - reduces latency)
-                            # Uncomment to skip every other frame for lower latency
-                            # if frame_count % 2 == 0:
-                            #     continue
-
-                            # Encode frame as JPEG with optimized quality for speed
-                            # Lower quality = faster encoding = less latency
-                            ret, buffer = cv2.imencode('.jpg', frame, [
-                                cv2.IMWRITE_JPEG_QUALITY, 75,  # Reduced from 85 for speed
-                                cv2.IMWRITE_JPEG_OPTIMIZE, 1   # Enable optimization
-                            ])
-
-                            if not ret:
-                                continue
-
-                            # Yield frame in multipart format
-                            yield (b'--frame\r\n'
-                                   b'Content-Type: image/jpeg\r\n\r\n' + buffer.tobytes() + b'\r\n')
-                    finally:
-                        # TASK 3: Always release when the inner loop exits for any reason
-                        # (browser disconnect, exception, generator close)
-                        cap.release()
-                        cap = None
-                        print(f"[Camera Feed] Released capture for {stream_url} "
-                              f"(frames served: {frame_count})")
-                    # Inner loop exited cleanly — no more retries needed
-                    break
-
-                except Exception as e:
-                    print(f"[Camera Feed Error] Camera: {camera.name}, URL: {stream_url}, "
-                          f"Error: {str(e)}, retry={retry_count + 1}/{max_retries}")
-                    retry_count += 1
-                    if cap is not None:
-                        cap.release()
-                        cap = None
-                    if retry_count < max_retries:
-                        time.sleep(1)
-
-            # If all retries failed
-            yield (b'--frame\r\n'
-                   b'Content-Type: text/plain\r\n\r\n'
-                   b'Failed to connect to camera stream. Please check camera URL and network connectivity.\r\n')
-        
-        return StreamingHttpResponse(
-            generate_frames(),
-            content_type='multipart/x-mixed-replace; boundary=frame'
+        # RTSP cameras — use the singleton stream manager
+        camera_id = str(camera.id)
+        logger.info(
+            "[CameraFeedView] Client connected for camera %s (id=%s)",
+            camera.name, camera_id,
         )
+
+        return StreamingHttpResponse(
+            stream_manager.mjpeg_frame_generator(camera_id, rtsp_url),
+            content_type='multipart/x-mixed-replace; boundary=frame',
+        )
+
+    # ── HTTP/HTTPS stream proxy ───────────────────────────────────────────────
+
+    def _proxy_http_stream(self, camera, stream_url, request):
+        """
+        Proxy a native HTTP MJPEG stream (IP Webcam / DroidCam) directly to
+        the browser — zero re-encoding overhead.
+        """
+        possible_endpoints = ['/video', '/videofeed', '/shot.jpg', '/photoaf.jpg', '']
+
+        for endpoint in possible_endpoints:
+            test_url = stream_url.rstrip('/') + endpoint
+            try:
+                resp = requests.get(
+                    test_url,
+                    stream=True,
+                    timeout=5,
+                    headers={
+                        'Connection': 'keep-alive',
+                        'Cache-Control': 'no-cache, no-store, must-revalidate',
+                        'Pragma': 'no-cache',
+                    },
+                )
+                if resp.status_code != 200:
+                    continue
+
+                content_type = resp.headers.get('Content-Type', '')
+
+                # Native MJPEG — pass bytes straight through
+                if 'multipart' in content_type:
+                    logger.info(
+                        "[CameraFeedView] Proxying native MJPEG from %s for camera %s",
+                        test_url, camera.name,
+                    )
+
+                    def _proxy_gen(response=resp):
+                        try:
+                            for chunk in response.iter_content(chunk_size=8192):
+                                if chunk:
+                                    yield chunk
+                        except Exception as exc:
+                            logger.warning(
+                                "[CameraFeedView] HTTP proxy interrupted for camera %s: %s",
+                                camera.name, exc,
+                            )
+
+                    return StreamingHttpResponse(
+                        _proxy_gen(),
+                        content_type=content_type,
+                    )
+
+            except requests.exceptions.RequestException:
+                continue
+
+        # Fallback — redirect browser directly to the camera URL
+        from django.http import HttpResponseRedirect
+        fallback_url = stream_url.rstrip('/') + '/video'
+        logger.warning(
+            "[CameraFeedView] All HTTP endpoints failed for camera %s — redirecting to %s",
+            camera.name, fallback_url,
+        )
+        return HttpResponseRedirect(fallback_url)
 
