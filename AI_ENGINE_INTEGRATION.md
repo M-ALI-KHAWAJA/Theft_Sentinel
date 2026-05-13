@@ -276,7 +276,15 @@ else:
 
 ---
 
-### 4.7 SSE Throttled to 10 FPS
+### 4.7 Global OpenCV Configuration (`apps.py`)
+
+**Problem:** Setting `OPENCV_FFMPEG_CAPTURE_OPTIONS` at the point of stream capture was too late if `cv2` had already been initialized elsewhere in the project, causing FFmpeg transport and buffer configurations to be silently ignored.
+
+**Fix:** The FFmpeg capture options (e.g. `rtsp_transport`, `stimeout`, `buffer_size`) are injected directly into `os.environ` during Django's `apps.py` initialization. This ensures they are applied globally before the first `cv2.VideoCapture()` call is made by the health checker or any API endpoint, forcing the intended network negotiation for RTSP streams.
+
+---
+
+### 4.8 SSE Throttled to 10 FPS
 
 The monitoring loop processes frames at full camera FPS (up to 30). The SSE
 callback is rate-limited to `_SSE_MAX_FPS = 10.0` to prevent unnecessary

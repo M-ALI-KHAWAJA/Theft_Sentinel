@@ -289,7 +289,8 @@ been permanently removed from all role menus.
 
 | Module | Responsibility |
 |--------|---------------|
-| `continuous_monitor.py` | Opens RTSP stream, runs two threads (capture + inference), downscales to 640×480, manages rolling frame buffer, uploads alert clips to Cloudinary, publishes SSE events |
+| `continuous_monitor.py` | Opens RTSP or HTTP stream natively (auto-detects protocol), runs two threads (capture + inference), downscales to 640×480, manages rolling frame buffer, uploads alert clips to Cloudinary, publishes SSE events |
+| `stream_manager.py` | Persistent thread-safe `CameraStreamManager` for MJPEG feeds. Maintains exactly one `cv2.VideoCapture` per camera for both RTSP and HTTP URLs. Prevents reconnect storms with exponential backoff. |
 | `inference_runner.py` | Orchestrates per-camera AI pipeline: YOLO → DeepSORT → OSNet → FAISS → X3D. Maintains isolated tracker and embedding buffers per instance. Returns standardized result dict |
 | `ai_service.py` | Singleton that loads and holds model references (YOLO, OSNet, X3D, FAISS matcher). Provides `inference_lock` and `state_lock` for thread safety. Manages `active_thief_global_ids` registry |
 | `sse_registry.py` | Thread-safe pub/sub broker. Each SSE client gets its own `queue.Queue`. `publish()` fans out to all subscribers; `unsubscribe()` fires on client disconnect |
@@ -299,7 +300,7 @@ been permanently removed from all role menus.
 
 | Component | Responsibility |
 |-----------|---------------|
-| `CameraFeedWithOverlay.jsx` | Renders MJPEG `<img>` + transparent canvas overlay. Consumes SSE via `useRealtimeTracking` hook. Draws LERP-smoothed RED bounding boxes for suspects. Manages `knownThievesRef` permanent thief memory |
+| `CameraFeedWithOverlay.jsx` | Renders MJPEG `<img>` + transparent canvas overlay. Consumes SSE via `useRealtimeTracking` hook. Draws LERP-smoothed RED bounding boxes for suspects (with 3.5s TTL). Manages `knownThievesRef` permanent thief memory |
 | `LiveTrackingNodeGraph.jsx` | Displays the cross-camera path graph for active suspects. Uses `React.createPortal` to escape CSS containment. Calls `StopTrackingView` API + dispatches `ai-suspect-cleared` CustomEvent |
 | `useRealtimeTracking.js` | Opens `EventSource` connection to the SSE endpoint. Auto-reconnects on disconnect. Exposes `{ trackingData, connected }` |
 | `AppRouter.jsx` | Defines all routes with role-based `ProtectedRoute` guards. Handles role-based redirects on auth state |

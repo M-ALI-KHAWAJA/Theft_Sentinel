@@ -547,7 +547,7 @@ Base prefix: `/api/ai/`
 ### Analyze Single Frame
 **POST** `/ai/analyze-frame/`
 
-Runs one-shot inference on a base64-encoded image.
+Runs one-shot inference on a base64-encoded image. Enforces branch-level authorization for the given camera.
 
 **Body:**
 ```json
@@ -587,7 +587,7 @@ Runs one-shot inference on a base64-encoded image.
 ### Process Camera Frame
 **POST** `/ai/process-camera/`
 
-Captures a live frame from the camera's RTSP URL and runs inference.
+Captures a live frame from the camera's RTSP URL and runs inference. Enforces branch-level authorization.
 
 **Body:**
 ```json
@@ -611,7 +611,7 @@ Accepts either `frame` (base64) **or** `camera_id`. Routes internally to the app
 Starts a background thread pair (`_capture_loop` + `_monitor_loop`) that
 processes the live camera stream at full camera FPS and publishes SSE events.
 The `ai_monitoring_enabled` flag is persisted to MongoDB so the state
-survives server restarts.
+survives server restarts. Enforces branch-level authorization (users can only start monitoring for cameras in their assigned branch, unless SUPER_ADMIN).
 
 **Body:**
 ```json
@@ -634,6 +634,8 @@ survives server restarts.
 
 ### Stop Continuous Monitor
 **POST** `/ai/monitor/stop/` *(ADMIN / SECURITY_INCHARGE only)*
+
+Enforces branch-level authorization.
 
 **Body:**
 ```json

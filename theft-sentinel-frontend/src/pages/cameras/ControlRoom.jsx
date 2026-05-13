@@ -31,7 +31,7 @@ const ControlRoom = () => {
   // Memoize fetch function to prevent unnecessary re-renders
   const fetchCameras = useCallback(async () => {
     if (!isAuthenticated) return;
-    
+
     setLoading(true);
     try {
       const response = await listCameras({
@@ -60,7 +60,7 @@ const ControlRoom = () => {
   // Auto-refresh camera list every 30 seconds
   useEffect(() => {
     if (!isAuthenticated) return;
-    
+
     const interval = setInterval(() => {
       fetchCameras();
     }, 30000); // 30 seconds
@@ -81,12 +81,12 @@ const ControlRoom = () => {
   };
 
   const handleDelete = (camera) => {
-    navigate(`/cameras`, { state: { deleteId: camera.id } });
+    navigate(`/cameras/control-room`, { state: { deleteId: camera.id } });
   };
 
   // Filter cameras
   const filteredCameras = cameras.filter((camera) => {
-    const matchesSearch = !filters.search || 
+    const matchesSearch = !filters.search ||
       camera.name.toLowerCase().includes(filters.search.toLowerCase()) ||
       camera.location.toLowerCase().includes(filters.search.toLowerCase());
     const matchesStatus = !filters.status || camera.status === filters.status;
@@ -133,11 +133,10 @@ const ControlRoom = () => {
           {/* Live Feeds Toggle */}
           <button
             onClick={() => setShowLiveFeeds(!showLiveFeeds)}
-            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all duration-300 ${
-              showLiveFeeds
+            className={`flex items-center gap-2 px-4 py-2 rounded-lg font-semibold transition-all duration-300 ${showLiveFeeds
                 ? 'bg-status-success/20 text-status-success border border-status-success/50 shadow-glow-success'
                 : 'glass border border-dark-border text-dark-text-muted hover:bg-dark-card'
-            }`}
+              }`}
           >
             <div className={`w-2 h-2 rounded-full ${showLiveFeeds ? 'bg-status-success animate-pulse' : 'bg-gray-500'}`} />
             <span>Live Feeds {showLiveFeeds ? 'ON' : 'OFF'}</span>

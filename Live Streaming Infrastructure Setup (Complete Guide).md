@@ -230,6 +230,7 @@ rtsp://YOUR_VPS_IP:8554/cam1
 ```
 
 Used directly in the application to preserve existing logic and avoid custom player implementation.
+*Note: The backend's `CameraStreamManager` automatically detects the protocol (via `urllib.parse`) and natively supports direct HTTP MJPEG webcams as well, without mutating the URL.*
 
 ---
 
