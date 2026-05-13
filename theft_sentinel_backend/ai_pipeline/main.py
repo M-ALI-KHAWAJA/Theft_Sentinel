@@ -31,7 +31,7 @@ import cv2
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from config.config import Config
+from ai_config.config import Config
 from detection.detector import PersonDetector
 from tracking.tracker import MultiObjectTracker
 from reid.extractor import ReIDExtractor
