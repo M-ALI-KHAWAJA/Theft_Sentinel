@@ -4,6 +4,10 @@ Alert Serializers
 from rest_framework import serializers
 from .models import Alert
 from apps.cameras.serializers import CameraSerializer
+from apps.accounts.validation import validate_message
+
+
+VALID_ALERT_SEVERITIES = {'MEDIUM', 'HIGH'}
 
 
 class AlertSerializer(serializers.ModelSerializer):
@@ -46,6 +50,12 @@ class AlertSerializer(serializers.ModelSerializer):
             }
         return None
 
+    def validate_severity(self, value):
+        value = (value or "").strip().upper()
+        if value not in VALID_ALERT_SEVERITIES:
+            raise serializers.ValidationError("Severity must be MEDIUM or HIGH.")
+        return value
+
 
 class AlertCreateSerializer(serializers.ModelSerializer):
     """Alert creation serializer"""
@@ -60,10 +70,27 @@ class AlertCreateSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Metadata must be a dictionary")
         return value
 
+    def validate_alert_type(self, value):
+        value = (value or "").strip()
+        if len(value) < 2 or len(value) > 100:
+            raise serializers.ValidationError("Alert type is required.")
+        return value
+
+    def validate_severity(self, value):
+        value = (value or "").strip().upper()
+        if value not in VALID_ALERT_SEVERITIES:
+            raise serializers.ValidationError("Severity must be MEDIUM or HIGH.")
+        return value
+
 
 class AlertAcknowledgeSerializer(serializers.Serializer):
     """Serializer for acknowledging alerts"""
     status = serializers.ChoiceField(choices=['ACKED', 'RESOLVED'])
     guard_email = serializers.EmailField(required=True)  # Guard assignment is mandatory, identified by email
-    comment = serializers.CharField(required=False, allow_blank=True, default='')
+    comment = serializers.CharField(required=False, allow_blank=True, default='', max_length=1000)
+
+    def validate_comment(self, value):
+        if not value:
+            return ''
+        return validate_message(value, min_length=1, max_length=1000)
 

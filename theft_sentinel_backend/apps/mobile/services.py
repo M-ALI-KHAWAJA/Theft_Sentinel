@@ -5,6 +5,7 @@ from django.conf import settings
 from django.core.mail import send_mail
 from django.utils import timezone
 from .models import Notification
+from apps.accounts.validation import normalize_pakistani_phone
 import logging
 
 logger = logging.getLogger(__name__)
@@ -26,6 +27,12 @@ class NotificationService:
         Returns:
             bool: Success status
         """
+        try:
+            phone_number = normalize_pakistani_phone(phone_number, required=True)
+        except Exception as exc:
+            logger.error("Failed to send SMS: invalid phone number %r (%s)", phone_number, exc)
+            return False
+
         notification = Notification.objects.create(
             user=user,
             notification_type='SMS',
@@ -59,7 +66,7 @@ class NotificationService:
             notification.sent_at = timezone.now()
             notification.save()
             
-            logger.info(f"SMS sent successfully to {phone_number}: {twilio_message.sid}")
+            logger.info(f"SMS sent successfully to {phone_number}. Twilio SID: {twilio_message.sid}")
             return True
             
         except Exception as e:

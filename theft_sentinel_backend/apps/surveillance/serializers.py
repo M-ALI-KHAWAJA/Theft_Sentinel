@@ -4,6 +4,7 @@ Surveillance Event Serializers
 from rest_framework import serializers
 from .models import SurveillanceEvent
 from apps.cameras.serializers import CameraSerializer
+from apps.accounts.validation import validate_stream_url
 
 
 class SurveillanceEventSerializer(serializers.ModelSerializer):
@@ -29,4 +30,15 @@ class SurveillanceEventCreateSerializer(serializers.ModelSerializer):
         if not isinstance(value, dict):
             raise serializers.ValidationError("AI data must be a dictionary")
         return value
+
+    def validate_event_type(self, value):
+        value = (value or "").strip()
+        if len(value) < 2 or len(value) > 100:
+            raise serializers.ValidationError("Event type is required.")
+        return value
+
+    def validate_frame_url(self, value):
+        if not value:
+            return ""
+        return validate_stream_url(value)
 

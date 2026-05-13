@@ -1,178 +1,160 @@
 /**
- * Professional form validation utilities
+ * Reusable frontend validation utilities.
+ * Backend serializers enforce the same rules; these helpers keep form feedback immediate.
  */
 
-/**
- * Validates email format
- * Rules:
- * - Must start with alphabets
- * - May contain numbers or underscores after start
- * - No special symbols allowed (except _)
- * - Must end with @gmail.com
- */
-export const validateEmail = (email) => {
-  if (!email || email.trim() === '') {
-    return { valid: false, message: 'Email is required' };
-  }
+export const USERNAME_MESSAGE =
+  'Username must be 3-30 characters, start with a letter, and contain only letters, numbers, dots, or underscores.';
+export const EMAIL_MESSAGE = 'Enter a valid email address.';
+export const PASSWORD_MESSAGE =
+  'Password must be at least 8 characters and include uppercase, lowercase, number, and special character.';
+export const PHONE_MESSAGE = 'Enter a valid Pakistani mobile number (e.g., 03001234567).';
+export const CNIC_MESSAGE = 'Enter a valid CNIC (e.g., 35202-1234567-1).';
+export const NAME_MESSAGE = 'Name must contain only letters and be at least 2 characters long.';
+export const COMPANY_MESSAGE = 'Company name is required.';
+export const ADDRESS_MESSAGE = 'Address is required and must be at least 10 characters.';
+export const REASON_MESSAGE = 'Please provide a detailed reason (minimum 10 characters).';
 
-  const trimmed = email.trim();
-  
-  // Check for leading/trailing spaces
-  if (trimmed !== email) {
-    return { valid: false, message: 'Email cannot have leading or trailing spaces' };
-  }
+export const PASSWORD_EXAMPLE = 'Theft@123';
 
-  // Must start with alphabet
-  if (!/^[a-zA-Z]/.test(trimmed)) {
-    return { valid: false, message: 'Email must start with a letter' };
-  }
+const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const usernameRegex = /^[A-Za-z][A-Za-z0-9_.]{2,29}$/;
+const phoneRegex = /^(\+92|92|0)3[0-9]{9}$/;
+const cnicRegex = /^\d{5}-?\d{7}-?\d{1}$/;
+const nameRegex = /^[A-Za-z .-]+$/;
+const companyRegex = /^[A-Za-z0-9 .&-]+$/;
+const streamUrlRegex = /^(rtsp|rtmp|https?):\/\/\S+$/i;
 
-  // Must end with @gmail.com
-  if (!trimmed.endsWith('@gmail.com')) {
-    return { valid: false, message: 'Email must end with @gmail.com' };
-  }
+export const trimInput = (value) => (typeof value === 'string' ? value.trim() : value);
 
-  // Extract local part (before @)
-  const localPart = trimmed.split('@')[0];
-  
-  // Local part can only contain letters, numbers, and underscores
-  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(localPart)) {
-    return { valid: false, message: 'Email can only contain letters, numbers, and underscores after the first letter' };
-  }
+export const result = (valid, message = '') => ({ valid, message });
 
-  // Minimum length check (at least 1 char + @gmail.com = 11 chars minimum)
-  if (trimmed.length < 11) {
-    return { valid: false, message: 'Email is too short' };
-  }
-
-  // Maximum length check (reasonable limit)
-  if (trimmed.length > 100) {
-    return { valid: false, message: 'Email is too long' };
-  }
-
-  return { valid: true, message: '' };
+export const validateRequired = (value, message = 'This field is required.') => {
+  if (typeof value !== 'string') return value === undefined || value === null ? result(false, message) : result(true);
+  return value.trim() ? result(true) : result(false, message);
 };
 
-/**
- * Validates username format
- * Rules:
- * - Must start with alphabets
- * - May contain numbers and underscores
- * - No spaces
- * - No special characters
- */
+export const validateLength = (value, min, max, message) => {
+  const text = trimInput(value || '');
+  if (text.length < min || text.length > max) return result(false, message);
+  return result(true);
+};
+
 export const validateUsername = (username) => {
-  if (!username || username.trim() === '') {
-    return { valid: false, message: 'Username is required' };
-  }
-
-  const trimmed = username.trim();
-  
-  // Check for leading/trailing spaces
-  if (trimmed !== username) {
-    return { valid: false, message: 'Username cannot have leading or trailing spaces' };
-  }
-
-  // Minimum length
-  if (trimmed.length < 3) {
-    return { valid: false, message: 'Username must be at least 3 characters long' };
-  }
-
-  // Maximum length
-  if (trimmed.length > 30) {
-    return { valid: false, message: 'Username must be less than 30 characters' };
-  }
-
-  // Must start with alphabet
-  if (!/^[a-zA-Z]/.test(trimmed)) {
-    return { valid: false, message: 'Username must start with a letter' };
-  }
-
-  // Can only contain letters, numbers, and underscores
-  if (!/^[a-zA-Z][a-zA-Z0-9_]*$/.test(trimmed)) {
-    return { valid: false, message: 'Username can only contain letters, numbers, and underscores' };
-  }
-
-  return { valid: true, message: '' };
+  const text = trimInput(username || '');
+  if (!usernameRegex.test(text)) return result(false, USERNAME_MESSAGE);
+  return result(true);
 };
 
-/** Shown next to password fields as a format hint */
-export const PASSWORD_EXAMPLE = 'Abc@1234';
+export const validateEmail = (email) => {
+  const text = trimInput(email || '').toLowerCase();
+  if (!emailRegex.test(text) || /\s/.test(text)) return result(false, EMAIL_MESSAGE);
+  return result(true);
+};
 
-const PASSWORD_RULES_MESSAGE =
-  'Password must be at least 8 characters long and include at least one uppercase letter (A–Z), one lowercase letter (a–z), one number (0–9), and one special character (e.g. @, #, $, %).';
-
-/**
- * Validates password strength
- * Rules:
- * - Minimum 8 characters
- * - At least one uppercase letter
- * - At least one lowercase letter
- * - At least one number
- * - At least one special character (non-alphanumeric)
- */
 export const validatePassword = (password) => {
-  if (!password || password.trim() === '') {
-    return { valid: false, message: 'Password is required' };
+  const text = password || '';
+  if (
+    text.length < 8 ||
+    text.length > 128 ||
+    /\s/.test(text) ||
+    !/[A-Z]/.test(text) ||
+    !/[a-z]/.test(text) ||
+    !/[0-9]/.test(text) ||
+    !/[^A-Za-z0-9\s]/.test(text)
+  ) {
+    return result(false, PASSWORD_MESSAGE);
   }
-
-  // Check for leading/trailing spaces
-  if (password.trim() !== password) {
-    return { valid: false, message: 'Password cannot have leading or trailing spaces' };
-  }
-
-  // Minimum length
-  if (password.length < 8) {
-    return { valid: false, message: PASSWORD_RULES_MESSAGE };
-  }
-
-  // Maximum length (reasonable limit)
-  if (password.length > 128) {
-    return { valid: false, message: 'Password is too long (maximum 128 characters)' };
-  }
-
-  // At least one uppercase letter
-  if (!/[A-Z]/.test(password)) {
-    return { valid: false, message: PASSWORD_RULES_MESSAGE };
-  }
-
-  // At least one lowercase letter
-  if (!/[a-z]/.test(password)) {
-    return { valid: false, message: PASSWORD_RULES_MESSAGE };
-  }
-
-  // At least one number
-  if (!/[0-9]/.test(password)) {
-    return { valid: false, message: PASSWORD_RULES_MESSAGE };
-  }
-
-  // At least one special character
-  if (!/[^A-Za-z0-9]/.test(password)) {
-    return { valid: false, message: PASSWORD_RULES_MESSAGE };
-  }
-
-  return { valid: true, message: '' };
+  return result(true);
 };
 
-/**
- * Validates that two passwords match
- */
 export const validatePasswordMatch = (password, confirmPassword) => {
-  if (!confirmPassword || confirmPassword.trim() === '') {
-    return { valid: false, message: 'Please confirm your password' };
-  }
-
-  if (password !== confirmPassword) {
-    return { valid: false, message: 'Passwords do not match' };
-  }
-
-  return { valid: true, message: '' };
+  if (!confirmPassword) return result(false, 'Please confirm your password');
+  if (password !== confirmPassword) return result(false, 'Passwords do not match');
+  return result(true);
 };
 
-/**
- * Trims input value to remove leading/trailing spaces
- */
-export const trimInput = (value) => {
-  return typeof value === 'string' ? value.trim() : value;
+export const validatePakistaniPhone = (phone, required = true) => {
+  const text = trimInput(phone || '');
+  if (!text && !required) return result(true);
+  if (!phoneRegex.test(text)) return result(false, PHONE_MESSAGE);
+  return result(true);
 };
 
+export const normalizePakistaniPhone = (phone) => {
+  const text = trimInput(phone || '');
+  if (text.startsWith('+92')) return text;
+  if (text.startsWith('92')) return `+${text}`;
+  if (text.startsWith('0')) return `+92${text.slice(1)}`;
+  return text;
+};
+
+export const validateCNIC = (cnic) => {
+  const text = trimInput(cnic || '');
+  if (!cnicRegex.test(text)) return result(false, CNIC_MESSAGE);
+  return result(true);
+};
+
+export const normalizeCNIC = (cnic) => {
+  const digits = trimInput(cnic || '').replaceAll('-', '');
+  if (digits.length !== 13) return trimInput(cnic || '');
+  return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
+};
+
+export const validateName = (name) => {
+  const text = trimInput(name || '');
+  if (text.length < 2 || text.length > 100 || !nameRegex.test(text) || /^\d+$/.test(text)) {
+    return result(false, NAME_MESSAGE);
+  }
+  return result(true);
+};
+
+export const validateCompanyName = (name) => {
+  const text = trimInput(name || '');
+  if (text.length < 2 || text.length > 150 || !companyRegex.test(text)) {
+    return result(false, COMPANY_MESSAGE);
+  }
+  return result(true);
+};
+
+export const validateAddress = (address) => {
+  const text = trimInput(address || '');
+  if (text.length < 10 || text.length > 300) return result(false, ADDRESS_MESSAGE);
+  return result(true);
+};
+
+export const validateReason = (reason) => {
+  const text = trimInput(reason || '');
+  if (text.length < 10 || text.length > 1000) return result(false, REASON_MESSAGE);
+  return result(true);
+};
+
+export const validateMessage = (message, min = 10, max = 5000) => {
+  const text = trimInput(message || '');
+  if (text.length < min || text.length > max) {
+    return result(false, `Message must be ${min}-${max} characters.`);
+  }
+  return result(true);
+};
+
+export const validateCameraName = (value) => validateLength(value, 2, 100, 'Camera name is required.');
+export const validateCameraLocation = (value) => validateLength(value, 2, 150, 'Location is required.');
+export const validateStreamUrl = (value) => {
+  const text = trimInput(value || '');
+  if (!streamUrlRegex.test(text)) {
+    return result(false, 'Stream URL must start with rtsp://, rtmp://, http://, or https://.');
+  }
+  return result(true);
+};
+
+export const firstInvalid = (checks) => checks.find((check) => !check.valid) || result(true);
+
+export const scrollToFirstInvalid = () => {
+  window.requestAnimationFrame(() => {
+    const el = document.querySelector('[aria-invalid="true"], .border-status-error');
+    if (el?.scrollIntoView) {
+      el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      if (typeof el.focus === 'function') el.focus({ preventScroll: true });
+    }
+  });
+};

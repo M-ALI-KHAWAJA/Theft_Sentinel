@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listCameras } from '../../api/cameras';
+import { listCameras, updateCameraStatus } from '../../api/cameras';
 import { useRecoilValue } from 'recoil';
 import { isAuthenticatedState, authUserState } from '../../store/authStore';
 import { useNavigate } from 'react-router-dom';
@@ -84,6 +84,18 @@ const ControlRoom = () => {
     navigate(`/cameras/control-room`, { state: { deleteId: camera.id } });
   };
 
+  const handleStatusChange = async (camera, status) => {
+    try {
+      await updateCameraStatus(camera.id, status);
+      toast.success(status === 'ONLINE' ? 'Camera activated successfully' : 'Camera turned off successfully');
+      fetchCameras();
+    } catch (error) {
+      const errorMsg = error.response?.data?.error || 'Failed to update camera status';
+      toast.error(errorMsg);
+      fetchCameras();
+    }
+  };
+
   // Filter cameras
   const filteredCameras = cameras.filter((camera) => {
     const matchesSearch = !filters.search ||
@@ -119,7 +131,7 @@ const ControlRoom = () => {
           </h1>
           <p className="text-dark-text-muted">Live camera feeds and monitoring</p>
         </div>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-col sm:flex-row items-stretch sm:items-center gap-3 w-full sm:w-auto">
           {/* Add Camera (Admin only) */}
           {isAdmin && (
             <button
@@ -246,6 +258,7 @@ const ControlRoom = () => {
               onViewFeed={handleViewFeed}
               onEdit={isAdmin ? handleEdit : undefined}
               onDelete={isAdmin ? handleDelete : undefined}
+              onStatusChange={isAdmin ? handleStatusChange : undefined}
               showFeed={showLiveFeeds}
               showActions={isAdmin} // Only admins can edit/delete
             />

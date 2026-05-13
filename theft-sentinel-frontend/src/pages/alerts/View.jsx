@@ -2,23 +2,27 @@ import { useState, useEffect } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { getAlert, acknowledgeAlert } from '../../api/alerts';
 import { listUsers } from '../../api/auth';
+import { useRecoilValue } from 'recoil';
+import { authUserState } from '../../store/authStore';
 import toast from 'react-hot-toast';
 import { ArrowLeftIcon, CheckCircleIcon } from '@heroicons/react/24/outline';
 
 const View = () => {
   const navigate = useNavigate();
   const { id } = useParams();
+  const user = useRecoilValue(authUserState);
   const [alert, setAlert] = useState(null);
   const [loading, setLoading] = useState(true);
   const [acknowledging, setAcknowledging] = useState(false);
   const [guards, setGuards] = useState([]);
   const [selectedGuard, setSelectedGuard] = useState('');
   const [comment, setComment] = useState('');
+  const canAcknowledge = user?.role === 'ADMIN' || user?.role === 'SECURITY_INCHARGE';
 
   useEffect(() => {
     fetchAlert();
-    fetchGuards();
-  }, [id]);
+    if (canAcknowledge) fetchGuards();
+  }, [id, canAcknowledge]);
 
   const fetchAlert = async () => {
     try {
@@ -77,25 +81,24 @@ const View = () => {
   if (!alert) return null;
 
   const severityColors = {
-    low: 'bg-status-info/20 text-status-info border border-status-info/50',
     medium: 'bg-status-warning/20 text-status-warning border border-status-warning/50',
     high: 'bg-status-error/20 text-status-error border border-status-error/50',
-    critical: 'bg-status-error/30 text-status-error border border-status-error',
   };
+  const severityKey = alert.severity?.toLowerCase();
 
   return (
     <div className="space-y-6">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-4">
+      <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3">
+        <div className="flex items-center space-x-4 min-w-0">
           <button
             onClick={() => navigate('/alerts')}
             className="p-2 hover:bg-dark-card rounded-full transition-colors"
           >
             <ArrowLeftIcon className="h-6 w-6 text-dark-text-secondary" />
           </button>
-          <h1 className="text-3xl font-bold text-dark-text-primary">Alert Details</h1>
+          <h1 className="text-3xl font-bold text-dark-text-primary truncate">Alert Details</h1>
         </div>
-        {alert.status !== 'ACKED' && alert.status !== 'RESOLVED' && (
+        {canAcknowledge && alert.status !== 'ACKED' && alert.status !== 'RESOLVED' && (
           <button
             onClick={handleAcknowledge}
             disabled={acknowledging || !selectedGuard}
@@ -110,14 +113,14 @@ const View = () => {
       <div className="glass rounded-xl border border-dark-border p-6">
         <div className="space-y-6">
           {/* Header */}
-          <div className="flex items-start justify-between pb-6 border-b border-dark-border">
-            <div>
+          <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3 pb-6 border-b border-dark-border">
+            <div className="min-w-0">
               <h2 className="text-2xl font-bold text-dark-text-primary">{alert.alert_type}</h2>
               <p className="text-dark-text-secondary mt-2">{alert.description || 'No description available'}</p>
             </div>
             <span
               className={`px-4 py-2 rounded-full text-sm font-semibold ${
-                severityColors[alert.severity] || 'bg-dark-card text-dark-text-muted border border-dark-border'
+                severityColors[severityKey] || 'bg-dark-card text-dark-text-muted border border-dark-border'
               }`}
             >
               {alert.severity?.toUpperCase() || 'UNKNOWN'}
@@ -340,7 +343,7 @@ const View = () => {
           )}
 
           {/* Acknowledge Form - Only show if alert is not acknowledged */}
-          {alert.status !== 'ACKED' && alert.status !== 'RESOLVED' && (
+          {canAcknowledge && alert.status !== 'ACKED' && alert.status !== 'RESOLVED' && (
             <div className="border-t border-dark-border pt-6">
               <h3 className="text-lg font-semibold text-dark-text-primary mb-4">Acknowledge & Assign to Guard</h3>
               <div className="space-y-4">

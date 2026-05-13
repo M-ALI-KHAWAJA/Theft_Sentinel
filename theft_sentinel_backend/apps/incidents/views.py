@@ -234,6 +234,16 @@ class IncidentAssignView(views.APIView):
                     {'error': 'User not found'},
                     status=status.HTTP_404_NOT_FOUND
                 )
+            if user.role != 'SECURITY_GUARD':
+                return Response(
+                    {'error': 'Incidents can only be assigned to Security Guards.'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            if user_branch is not None and getattr(user, "branch", None) != user_branch:
+                return Response(
+                    {'error': 'User not found'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
             
             incident.assigned_to = user
             incident.assigned_by = request.user  # Track who assigned the incident

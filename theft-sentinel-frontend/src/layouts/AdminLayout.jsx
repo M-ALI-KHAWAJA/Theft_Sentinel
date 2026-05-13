@@ -19,7 +19,7 @@ const AdminLayout = () => {
           sidebarOpen ? 'ml-64' : 'ml-0 lg:ml-20'
         }`}
       >
-        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8 lg:pl-8 pl-16">
+        <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">
           <TenantContextBanner user={user} />
           <Outlet />
         </div>

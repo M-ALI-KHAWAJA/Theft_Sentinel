@@ -3,6 +3,7 @@ import { useNavigate } from 'react-router-dom';
 import { branchAdminResetRequest } from '../../api/tenancy';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
+import { validateEmail, validateReason } from '../../utils/validation';
 
 const BranchAdminForgotPassword = () => {
   const navigate = useNavigate();
@@ -13,9 +14,19 @@ const BranchAdminForgotPassword = () => {
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    const emailCheck = validateEmail(email);
+    if (!emailCheck.valid) {
+      showError(emailCheck.message);
+      return;
+    }
+    const reasonCheck = validateReason(reason);
+    if (!reasonCheck.valid) {
+      showError(reasonCheck.message);
+      return;
+    }
     setLoading(true);
     try {
-      await branchAdminResetRequest(email, reason);
+      await branchAdminResetRequest(email.trim().toLowerCase(), reason.trim());
       showSuccess('Request submitted for Super Admin review.');
       setTimeout(() => navigate('/login'), 2000);
     } catch (err) {

@@ -16,8 +16,8 @@ const ConfirmationModal = ({ show, title, message, onConfirm, onCancel, confirmT
   };
 
   return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 px-4 animate-fadeIn">
-      <div className="bg-white rounded-lg shadow-2xl max-w-md w-full animate-scaleIn">
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black bg-opacity-50 px-4 py-6 overflow-y-auto animate-fadeIn">
+      <div className="bg-white rounded-lg shadow-2xl max-w-md w-full max-h-[90vh] overflow-y-auto animate-scaleIn">
         <div className="p-6">
           <div className="flex justify-end mb-2">
             <button

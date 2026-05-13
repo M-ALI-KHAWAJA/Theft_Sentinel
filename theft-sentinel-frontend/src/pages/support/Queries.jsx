@@ -12,6 +12,7 @@ import {
   listBranchAdminPendingQueries,
   listMyQueries,
 } from '../../api/support';
+import { validateMessage } from '../../utils/validation';
 
 const pill = (status) => {
   const base = 'px-3 py-1 rounded-full text-xs font-semibold';
@@ -55,8 +56,13 @@ const Queries = () => {
 
   const submit = async (e) => {
     e.preventDefault();
+    const messageCheck = validateMessage(message);
+    if (!messageCheck.valid) {
+      showError(messageCheck.message);
+      return;
+    }
     try {
-      await createMyQuery(message);
+      await createMyQuery(message.trim());
       setMessage('');
       showSuccess('Query submitted.');
       await load();

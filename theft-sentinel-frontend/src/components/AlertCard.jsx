@@ -3,21 +3,18 @@ import { BellAlertIcon, TrashIcon } from '@heroicons/react/24/outline';
 const AlertCard = ({ alert, onClick, onDelete, showDelete = false }) => {
   // Dark theme severity colors
   const severityColors = {
-    low: 'border-status-info bg-status-info/10',
     medium: 'border-status-warning bg-status-warning/10',
     high: 'border-status-error bg-status-error/10',
-    critical: 'border-status-error bg-status-error/20',
   };
 
   const severityBadgeColors = {
-    low: 'bg-status-info/20 text-status-info border border-status-info/50',
     medium: 'bg-status-warning/20 text-status-warning border border-status-warning/50',
     high: 'bg-status-error/20 text-status-error border border-status-error/50',
-    critical: 'bg-status-error/30 text-status-error border border-status-error animate-pulse',
   };
 
-  const borderColor = severityColors[alert.severity] || 'border-dark-border bg-dark-card';
-  const badgeColor = severityBadgeColors[alert.severity] || 'bg-dark-card text-dark-text-muted border border-dark-border';
+  const severityKey = alert.severity?.toLowerCase();
+  const borderColor = severityColors[severityKey] || 'border-dark-border bg-dark-card';
+  const badgeColor = severityBadgeColors[severityKey] || 'bg-dark-card text-dark-text-muted border border-dark-border';
 
   // Check if alert is acknowledged (status can be ACKED or acknowledged field)
   const isAcknowledged = alert.status === 'ACKED' || alert.status === 'RESOLVED' || alert.acknowledged;
@@ -29,17 +26,17 @@ const AlertCard = ({ alert, onClick, onDelete, showDelete = false }) => {
         !isAcknowledged ? 'ring-2 ring-status-error/50 shadow-glow-error' : ''
       }`}
     >
-      <div className="flex items-start justify-between">
-        <div className="flex items-center space-x-3">
+      <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+        <div className="flex items-center space-x-3 min-w-0">
           <div className={`p-3 rounded-lg ${isAcknowledged ? 'bg-dark-card' : 'bg-status-error'}`}>
             <BellAlertIcon className="h-6 w-6 text-white" />
           </div>
-          <div>
-            <h3 className="text-lg font-semibold text-dark-text-primary">{alert.alert_type}</h3>
+          <div className="min-w-0">
+            <h3 className="text-lg font-semibold text-dark-text-primary truncate">{alert.alert_type}</h3>
             <p className="text-sm text-dark-text-muted">{alert.description || 'No description'}</p>
           </div>
         </div>
-        <div className="flex flex-col items-end space-y-2">
+        <div className="flex flex-row sm:flex-col items-start sm:items-end gap-2">
           <span className={`px-3 py-1 rounded-full text-xs font-semibold ${badgeColor}`}>
             {alert.severity?.toUpperCase() || 'UNKNOWN'}
           </span>

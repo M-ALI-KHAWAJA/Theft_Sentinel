@@ -29,6 +29,7 @@ body {
   padding: 0;
   min-width: 320px;
   min-height: 100vh;
+  overflow-x: hidden;
   background-color: #0B0F14;
   color: #F9FAFB;
 }
@@ -36,6 +37,18 @@ body {
 #root {
   width: 100%;
   min-height: 100vh;
+  overflow-x: hidden;
+}
+
+img,
+video,
+canvas,
+svg {
+  max-width: 100%;
+}
+
+.min-w-0 {
+  min-width: 0;
 }
 
 /* Custom scrollbar - Dark theme */
@@ -379,6 +392,20 @@ body {
 
 /* Touch targets for all mobile devices (≤ 768px) */
 @media (max-width: 768px) {
+  .glass,
+  .glass-strong {
+    max-width: 100%;
+  }
+
+  .recharts-wrapper,
+  .recharts-surface {
+    max-width: 100% !important;
+  }
+
+  .flex {
+    min-width: 0;
+  }
+
   /* Ensure interactive elements are touch-friendly */
   button:not(.desktop-preserve),
   a[role="button"],

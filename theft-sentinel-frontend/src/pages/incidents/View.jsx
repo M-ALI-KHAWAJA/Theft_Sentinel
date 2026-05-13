@@ -6,6 +6,7 @@ import { getIncident, updateIncidentStatus, assignIncident, deleteIncident } fro
 import { listUsers } from '../../api/auth';
 import toast from 'react-hot-toast';
 import { ArrowLeftIcon, TrashIcon } from '@heroicons/react/24/outline';
+import { validateMessage } from '../../utils/validation';
 
 const View = () => {
   const navigate = useNavigate();
@@ -63,10 +64,17 @@ const View = () => {
   };
 
   const handleUpdateStatus = async () => {
+    if (notes.trim()) {
+      const notesCheck = validateMessage(notes, 1, 1000);
+      if (!notesCheck.valid) {
+        toast.error(notesCheck.message);
+        return;
+      }
+    }
     setUpdating(true);
     try {
       // CORRECTED: notes parameter instead of resolution
-      await updateIncidentStatus(id, newStatus, notes);
+      await updateIncidentStatus(id, newStatus, notes.trim());
       toast.success('Incident status updated successfully');
       fetchData();
       setNotes(''); // Clear notes after update
@@ -100,9 +108,16 @@ const View = () => {
   };
 
   const handleResolve = async () => {
+    if (notes.trim()) {
+      const notesCheck = validateMessage(notes, 1, 1000);
+      if (!notesCheck.valid) {
+        toast.error(notesCheck.message);
+        return;
+      }
+    }
     setUpdating(true);
     try {
-      await updateIncidentStatus(id, 'RESOLVED', notes);
+      await updateIncidentStatus(id, 'RESOLVED', notes.trim());
       toast.success('Incident resolved successfully');
       fetchData();
       setNotes('');

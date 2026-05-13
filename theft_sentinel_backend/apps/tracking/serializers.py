@@ -45,3 +45,13 @@ class TrackingRecordCreateSerializer(serializers.ModelSerializer):
         if not isinstance(value, (dict, list)):
             raise serializers.ValidationError("Vector must be a dictionary or list")
         return value
+
+    def validate_confidence(self, value):
+        if value is not None and not 0 <= value <= 1:
+            raise serializers.ValidationError("Confidence must be between 0.0 and 1.0.")
+        return value
+
+    def validate_x3d_score(self, value):
+        if value is not None and not 0 <= value <= 1:
+            raise serializers.ValidationError("X3D score must be between 0.0 and 1.0.")
+        return value

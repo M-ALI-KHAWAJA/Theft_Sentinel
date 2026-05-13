@@ -27,6 +27,11 @@ export const patchCamera = (id, data) => {
   return axiosInstance.patch(`/api/cameras/${id}/`, data);
 };
 
+// Update camera status after backend feed validation
+export const updateCameraStatus = (id, status) => {
+  return axiosInstance.patch(`/api/cameras/${id}/status/`, { status });
+};
+
 // Delete camera
 export const deleteCamera = (id) => {
   return axiosInstance.delete(`/api/cameras/${id}/`);

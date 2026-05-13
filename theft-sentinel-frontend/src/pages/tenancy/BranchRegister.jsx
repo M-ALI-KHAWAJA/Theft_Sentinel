@@ -3,7 +3,20 @@ import { useNavigate } from 'react-router-dom';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
 import { registerBranch } from '../../api/tenancy';
-import { validatePassword, validateUsername } from '../../utils/validation';
+import {
+  firstInvalid,
+  normalizeCNIC,
+  normalizePakistaniPhone,
+  scrollToFirstInvalid,
+  validateAddress,
+  validateCNIC,
+  validateCompanyName,
+  validateEmail,
+  validateName,
+  validatePakistaniPhone,
+  validatePassword,
+  validateUsername,
+} from '../../utils/validation';
 
 const formatApiError = (data) => {
   if (!data) return 'Registration failed.';
@@ -40,21 +53,39 @@ const BranchRegister = () => {
     company_address: '',
     password: '',
   });
+  const [errors, setErrors] = useState({});
 
-  const handleChange = (e) => setFormData((p) => ({ ...p, [e.target.name]: e.target.value }));
+  const handleChange = (e) => {
+    setFormData((p) => ({ ...p, [e.target.name]: e.target.value }));
+    if (errors[e.target.name]) setErrors((prev) => ({ ...prev, [e.target.name]: '' }));
+  };
+
+  const validateForm = () => {
+    const checks = [
+      ['company_name', validateCompanyName(formData.company_name)],
+      ['branch_name', validateCompanyName(formData.branch_name)],
+      ['admin_name', validateName(formData.admin_name)],
+      ['username', validateUsername(formData.username)],
+      ['cnic', validateCNIC(formData.cnic)],
+      ['email', validateEmail(formData.email)],
+      ['phone_number', validatePakistaniPhone(formData.phone_number)],
+      ['company_address', validateAddress(formData.company_address)],
+      ['password', validatePassword(formData.password)],
+    ];
+    const nextErrors = {};
+    checks.forEach(([field, check]) => {
+      if (!check.valid) nextErrors[field] = check.message;
+    });
+    setErrors(nextErrors);
+    return firstInvalid(checks.map(([, check]) => check)).valid;
+  };
 
   const handleSubmit = async (e) => {
     e.preventDefault();
 
-    const usernameCheck = validateUsername(formData.username);
-    if (!usernameCheck.valid) {
-      showError(usernameCheck.message);
-      return;
-    }
-
-    const passwordCheck = validatePassword(formData.password);
-    if (!passwordCheck.valid) {
-      showError(passwordCheck.message);
+    if (!validateForm()) {
+      showError('Please fix the validation errors before submitting');
+      scrollToFirstInvalid();
       return;
     }
 
@@ -63,7 +94,13 @@ const BranchRegister = () => {
       const payload = Object.fromEntries(
         Object.entries(formData).map(([key, value]) => [
           key,
-          key === 'password' ? value : value.trim(),
+          key === 'password'
+            ? value
+            : key === 'phone_number'
+              ? normalizePakistaniPhone(value)
+              : key === 'cnic'
+                ? normalizeCNIC(value)
+                : value.trim(),
         ])
       );
 
@@ -94,8 +131,10 @@ const BranchRegister = () => {
                 value={formData.company_name}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.company_name}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.company_name ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.company_name && <p className="mt-1 text-sm text-status-error">{errors.company_name}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Branch Name</label>
@@ -104,8 +143,10 @@ const BranchRegister = () => {
                 value={formData.branch_name}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.branch_name}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.branch_name ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.branch_name && <p className="mt-1 text-sm text-status-error">{errors.branch_name}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Admin Name</label>
@@ -114,8 +155,10 @@ const BranchRegister = () => {
                 value={formData.admin_name}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.admin_name}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.admin_name ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.admin_name && <p className="mt-1 text-sm text-status-error">{errors.admin_name}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Username</label>
@@ -124,8 +167,10 @@ const BranchRegister = () => {
                 value={formData.username}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.username}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.username ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.username && <p className="mt-1 text-sm text-status-error">{errors.username}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">CNIC</label>
@@ -134,8 +179,10 @@ const BranchRegister = () => {
                 value={formData.cnic}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.cnic}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.cnic ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.cnic && <p className="mt-1 text-sm text-status-error">{errors.cnic}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Email</label>
@@ -145,8 +192,10 @@ const BranchRegister = () => {
                 value={formData.email}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.email}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.email ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.email && <p className="mt-1 text-sm text-status-error">{errors.email}</p>}
             </div>
             <div>
               <label className="block text-sm text-dark-text-secondary mb-1">Phone Number (alerts)</label>
@@ -155,8 +204,10 @@ const BranchRegister = () => {
                 value={formData.phone_number}
                 onChange={handleChange}
                 required
-                className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+                aria-invalid={!!errors.phone_number}
+                className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.phone_number ? 'border-status-error' : 'border-dark-border'}`}
               />
+              {errors.phone_number && <p className="mt-1 text-sm text-status-error">{errors.phone_number}</p>}
             </div>
           </div>
 
@@ -167,8 +218,10 @@ const BranchRegister = () => {
               value={formData.company_address}
               onChange={handleChange}
               required
-              className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+              aria-invalid={!!errors.company_address}
+              className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.company_address ? 'border-status-error' : 'border-dark-border'}`}
             />
+            {errors.company_address && <p className="mt-1 text-sm text-status-error">{errors.company_address}</p>}
           </div>
 
           <div>
@@ -179,8 +232,10 @@ const BranchRegister = () => {
               value={formData.password}
               onChange={handleChange}
               required
-              className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
+              aria-invalid={!!errors.password}
+              className={`w-full px-4 py-3 bg-dark-card border rounded-lg text-white ${errors.password ? 'border-status-error' : 'border-dark-border'}`}
             />
+            {errors.password && <p className="mt-1 text-sm text-status-error">{errors.password}</p>}
           </div>
 
           <button

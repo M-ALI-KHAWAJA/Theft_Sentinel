@@ -17,16 +17,17 @@ class UserManager(BaseUserManager):
         if not email:
             raise ValueError('Email is required')
         
-        email = self.normalize_email(email)
+        username = str(username).strip()
+        email = self.normalize_email(str(email).strip()).lower()
 
         # Branch-scoped username uniqueness (global uniqueness removed for multi-tenancy).
         branch = extra_fields.get("branch", None)
         if branch is not None:
-            if self.model.objects.filter(username=username, branch=branch).exists():
+            if self.model.objects.filter(username__iexact=username, branch=branch).exists():
                 raise ValueError("Username already exists in this branch")
         else:
             # Legacy / Super Admin: enforce uniqueness in the NULL-branch namespace
-            if self.model.objects.filter(username=username, branch__isnull=True).exists():
+            if self.model.objects.filter(username__iexact=username, branch__isnull=True).exists():
                 raise ValueError("Username already exists")
 
         user = self.model(username=username, email=email, **extra_fields)

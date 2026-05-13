@@ -3,7 +3,14 @@ import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
 import { deleteSuperAdminAccount, getSuperAdminProfile, updateSuperAdminProfile } from '../../api/tenancy';
 import { changePassword } from '../../api/auth';
-import { validatePassword } from '../../utils/validation';
+import {
+  normalizeCNIC,
+  normalizePakistaniPhone,
+  validateCNIC,
+  validateName,
+  validatePakistaniPhone,
+  validatePassword,
+} from '../../utils/validation';
 
 const formatApiError = (data, fallback) => {
   if (!data) return fallback;
@@ -90,21 +97,31 @@ const Profile = () => {
       partner_cnics: (formData.partner_cnics || []).slice(0, Number(formData.partners_count || 0)).map((cnic) => cnic.trim()),
     };
 
-    if (!payload.full_name) {
-      showError('Full name is required.');
+    const nameCheck = validateName(payload.full_name);
+    if (!nameCheck.valid) {
+      showError(nameCheck.message);
       return;
     }
+    const phoneCheck = validatePakistaniPhone(payload.phone_number);
+    if (!phoneCheck.valid) {
+      showError(phoneCheck.message);
+      return;
+    }
+    payload.phone_number = normalizePakistaniPhone(payload.phone_number);
 
     for (let idx = 0; idx < payload.partners_count; idx += 1) {
-      if (!payload.partner_names[idx]) {
-        showError(`Partner name #${idx + 1} is required.`);
+      const partnerNameCheck = validateName(payload.partner_names[idx]);
+      if (!partnerNameCheck.valid) {
+        showError(`Partner name #${idx + 1}: ${partnerNameCheck.message}`);
         return;
       }
-      if (!payload.partner_cnics[idx]) {
-        showError(`Partner CNIC #${idx + 1} is required.`);
+      const partnerCnicCheck = validateCNIC(payload.partner_cnics[idx]);
+      if (!partnerCnicCheck.valid) {
+        showError(`Partner CNIC #${idx + 1}: ${partnerCnicCheck.message}`);
         return;
       }
     }
+    payload.partner_cnics = payload.partner_cnics.map((cnic) => normalizeCNIC(cnic));
 
     setSaving(true);
     try {
@@ -193,6 +210,7 @@ const Profile = () => {
               <input
                 value={formData.full_name}
                 onChange={(e) => setFormData((p) => ({ ...p, full_name: e.target.value }))}
+                required
                 className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
               />
             </div>
@@ -201,6 +219,7 @@ const Profile = () => {
               <input
                 value={formData.phone_number}
                 onChange={(e) => setFormData((p) => ({ ...p, phone_number: e.target.value }))}
+                required
                 className="w-full px-4 py-3 bg-dark-card border border-dark-border rounded-lg text-white"
               />
             </div>

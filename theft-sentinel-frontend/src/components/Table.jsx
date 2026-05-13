@@ -21,8 +21,8 @@ const Table = ({ columns, data, onRowClick, loading }) => {
   }
 
   return (
-    <div className="overflow-x-auto shadow-md rounded-lg border border-dark-border">
-      <table className="min-w-full divide-y divide-dark-border">
+    <div className="overflow-x-auto shadow-md rounded-lg border border-dark-border -mx-1 sm:mx-0">
+      <table className="min-w-[720px] w-full divide-y divide-dark-border">
         <thead className="bg-dark-surface">
           <tr>
             {columns.map((column) => (
@@ -71,11 +71,11 @@ export const Pagination = ({ currentPage, totalPages, onPageChange }) => {
   }
 
   return (
-    <div className="flex items-center justify-between mt-6">
+    <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-3 mt-6">
       <div className="text-sm text-dark-text-secondary">
         Page {currentPage} of {totalPages}
       </div>
-      <div className="flex space-x-2">
+      <div className="flex flex-wrap gap-2">
         <button
           onClick={() => onPageChange(currentPage - 1)}
           disabled={currentPage === 1}
