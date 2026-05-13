@@ -31,7 +31,6 @@ import HistoricalReporting from '../pages/dashboard/HistoricalReporting';
 import GuardDashboard from '../pages/dashboard/GuardDashboard';
 
 // Camera Pages
-import CamerasList from '../pages/cameras/List';
 import CameraCreate from '../pages/cameras/Create';
 import CameraEdit from '../pages/cameras/Edit';
 import ControlRoom from '../pages/cameras/ControlRoom';
@@ -123,14 +122,14 @@ const PublicRoute = ({ children }) => {
 // Role-based Home Redirect
 const RoleBasedRedirect = () => {
   const user = useRecoilValue(authUserState);
-  
+
   if (user?.role === 'SECURITY_GUARD') {
     return <Navigate to="/dashboard/guard" replace />;
   }
   if (user?.role === 'SUPER_ADMIN') {
     return <Navigate to="/super-admin/branches" replace />;
   }
-  
+
   return <Navigate to="/dashboard" replace />;
 };
 
@@ -140,7 +139,7 @@ const AppRouter = () => {
   // Select layout based on role
   const getLayout = () => {
     if (!user) return AdminLayout;
-    
+
     switch (user.role) {
       case 'SUPER_ADMIN':
         return AdminLayout;
@@ -161,29 +160,29 @@ const AppRouter = () => {
     <BrowserRouter>
       <Routes>
         {/* Public Routes - Redirect authenticated users to dashboard */}
-        <Route 
-          path="/" 
+        <Route
+          path="/"
           element={
             <PublicRoute>
               <Landing />
             </PublicRoute>
-          } 
+          }
         />
-        <Route 
-          path="/login" 
+        <Route
+          path="/login"
           element={
             <PublicRoute>
               <Login />
             </PublicRoute>
-          } 
+          }
         />
-        <Route 
-          path="/forgot-password" 
+        <Route
+          path="/forgot-password"
           element={
             <PublicRoute>
               <Navigate to="/login" replace />
             </PublicRoute>
-          } 
+          }
         />
         <Route
           path="/forgot-password/super-admin"
@@ -201,13 +200,13 @@ const AppRouter = () => {
             </PublicRoute>
           }
         />
-        <Route 
-          path="/reset-password" 
+        <Route
+          path="/reset-password"
           element={
             <PublicRoute>
               <ResetPassword />
             </PublicRoute>
-          } 
+          }
         />
 
         {/* Public tenancy routes */}
@@ -289,21 +288,21 @@ const AppRouter = () => {
           />
 
           {/* Dashboard Routes */}
-          <Route 
-            path="dashboard" 
+          <Route
+            path="dashboard"
             element={
               <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE']}>
                 <Overview />
               </ProtectedRoute>
-            } 
+            }
           />
-          <Route 
-            path="dashboard/guard" 
+          <Route
+            path="dashboard/guard"
             element={
               <ProtectedRoute allowedRoles={['SECURITY_GUARD']}>
                 <GuardDashboard />
               </ProtectedRoute>
-            } 
+            }
           />
           <Route
             path="dashboard/alerts-stats"
@@ -342,16 +341,6 @@ const AppRouter = () => {
             element={
               <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE']}>
                 <HistoricalReporting />
-              </ProtectedRoute>
-            }
-          />
-
-          {/* Camera Routes */}
-          <Route
-            path="cameras"
-            element={
-              <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE']}>
-                <CamerasList />
               </ProtectedRoute>
             }
           />
@@ -442,13 +431,13 @@ const AppRouter = () => {
               </ProtectedRoute>
             }
           />
-          <Route 
-            path="feedback/create" 
+          <Route
+            path="feedback/create"
             element={
               <ProtectedRoute allowedRoles={['ADMIN', 'SECURITY_INCHARGE', 'SECURITY_GUARD']}>
                 <FeedbackCreate />
               </ProtectedRoute>
-            } 
+            }
           />
           <Route
             path="feedback/my"
@@ -496,13 +485,13 @@ const AppRouter = () => {
         </Route>
 
         {/* 404 Route - Redirect to landing for unauthenticated, dashboard for authenticated */}
-        <Route 
-          path="*" 
+        <Route
+          path="*"
           element={
             <PublicRoute>
               <Navigate to="/" replace />
             </PublicRoute>
-          } 
+          }
         />
       </Routes>
     </BrowserRouter>
