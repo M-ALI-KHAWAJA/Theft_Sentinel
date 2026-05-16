@@ -1,36 +1,34 @@
 """
-Inference Runner — per-camera frame processor.
+Inference Runner — per-camera frame processor (Updated_AI_Engine_v2).
 
-Each ContinuousMonitor (or on-demand view) owns one InferenceRunner instance.
-The instance holds its own DeepSORT tracker and embedding-smoothing buffer so
-that per-camera state is completely isolated between threads.
+Each ContinuousMonitor owns one InferenceRunner instance.
+The instance holds its own DeepSORT tracker and embedding-smoothing buffer
+so that per-camera state is completely isolated between threads.
 
-All GPU calls and shared-state mutations go through the locks on AIService:
-  ai_service.inference_lock  — GPU forward passes (YOLO / OSNet / X3D)
-  ai_service.state_lock      — FAISS index, ClipBuffer, theft_scores,
-                               x3d_frame_counters
+Root-cause fix (v2 parity):
+  The previous version auto-assigned a module-level integer _int_cam_id
+  (1, 2, 3 …) to each InferenceRunner.  Embeddings were stored under that
+  integer; FAISS queries used that same integer for adaptive-threshold
+  selection.  On server restart or a new InferenceRunner creation the
+  integer changed, every track looked like a new cross-camera identity,
+  and with MATCH_THRESHOLD_DIFF_CAM = 0.50 everything collapsed into
+  GID=1 — exactly the bug reported.
 
-Public method signatures (preserved for backward compatibility with views.py):
-  run_inference(frame_bgr, camera_id=None) -> dict
-  process_frame(frame_bgr, camera_id=None) -> dict  ← alias, keeps views working
-  reset()
+  Fix: use the real MongoDB camera_id STRING passed to run_inference()
+  as the camera key throughout.  This is stable across restarts and
+  exactly matches the v2 main.py behavior (camera_id = integer index
+  there, string here — but used consistently either way).
 
-Return dict keys (unchanged API contract):
-  classification      "theft" | "normal"
-  confidence          float 0–1
-  detections          list  YOLO boxes  {bbox, confidence, class, class_id}
-  poses               []    always empty (no pose model in new pipeline)
-  tracks              list  DeepSORT tracks with global_id injected
-  suspicious_tracks   list  tracks whose latest X3D score ≥ SUSPICIOUS_THRESHOLD
-  frame_metadata      dict  (includes raw_x3d_score; suspicious=True when ≥ 0.50)
-  processing_time_ms  float
+v2 Changes (Updated_AI_Engine_v2 priority):
+  - X3D inference is delegated to ai_service.theft_detector (GlobalTheftDetector)
+    which owns the per-global-ID TheftState state machine.
+  - push_frame() is called for EVERY confirmed track every frame (FIX 2).
+  - IoU-matched raw YOLO bbox passed to push_frame() (FIX 3).
+  - track_id is always normalised via str() (FIX 1).
+  - is_theft / in_cooldown / consecutive_theft / theft_label propagated.
 
-Threshold behaviour (clarification #1):
-  score ≥ X3D_THEFT_THRESHOLD (0.80)      → classification="theft", alert eligible
-  score ≥ X3D_SUSPICIOUS_THRESHOLD (0.50) → classification="normal",
-                                             frame_metadata["suspicious"] = True
-  score <  X3D_SUSPICIOUS_THRESHOLD       → classification="normal"
-  raw_x3d_score is always included in frame_metadata regardless of threshold.
+All GPU calls go through ai_service.inference_lock.
+All shared-state mutations go through ai_service.state_lock.
 """
 
 import collections
@@ -45,27 +43,8 @@ logger = logging.getLogger(__name__)
 
 from .ai_service import ai_service
 
-# Pipeline constants — imported directly from ai_pipeline config, never
-# re-declared here (per clarification requirement).
 from ai_pipeline.ai_config.config import Config
-
-# Per-camera tracker — one instance per InferenceRunner, never shared.
 from ai_pipeline.tracking.tracker import MultiObjectTracker
-
-
-# ── module-level integer camera ID counter ────────────────────────────────────
-# Each InferenceRunner gets a unique small integer as the internal camera ID
-# used for DeepSORT and the FAISS/DB identity system.  The string MongoDB
-# camera_id is only used for metadata, never for the pipeline internals.
-_cam_counter_lock = threading.Lock()
-_cam_counter: int = 0
-
-
-def _next_int_camera_id() -> int:
-    global _cam_counter
-    with _cam_counter_lock:
-        _cam_counter += 1
-        return _cam_counter
 
 
 def _bbox_iou(b1: List[float], b2: List[float]) -> float:
@@ -83,50 +62,51 @@ def _bbox_iou(b1: List[float], b2: List[float]) -> float:
 
 class InferenceRunner:
     """
-    Stateful per-camera pipeline runner.
+    Stateful per-camera pipeline runner — v2 (Updated_AI_Engine_v2).
 
     Maintains:
-      • A DeepSORT tracker (thread-isolated — no sharing)
-      • A per-(cam_id, track_id) embedding smoothing deque (maxlen=10)
-      • Per-(cam_id, track_id) embedding update counters
+      • A DeepSORT tracker (thread-isolated — never shared between cameras)
+      • Per-(camera_id_str, track_id_str) embedding smoothing deque (maxlen=10)
+      • Per-(camera_id_str, track_id_str) embedding update counters
       • A local frame counter for periodic maintenance scheduling
 
-    All GPU calls and shared-state writes use the locks from AIService.
+    The camera_id is stored as None until the first run_inference() call,
+    at which point it is fixed to the MongoDB camera_id string.  All
+    subsequent FAISS / DB calls use this stable string key.
     """
 
-    # How often to prune expired global IDs (frames processed)
-    _PRUNE_EVERY   = 300
-    # How often to rebuild FAISS from DB (frames processed)
-    _REBUILD_EVERY = 500
+    _PRUNE_EVERY   = 300   # frames between expired-ID pruning
+    _REBUILD_EVERY = 500   # frames between FAISS index rebuild
 
     def __init__(self) -> None:
-        # Unique integer camera ID for the internal pipeline
-        self._int_cam_id: int = _next_int_camera_id()
+        # Set on first call to run_inference() — the actual MongoDB camera_id string.
+        # Using None until then avoids premature tracker construction.
+        self._camera_id_str: Optional[str] = None
 
-        # Lazy-initialised tracker (avoids import-time MultiObjectTracker
-        # construction before AIService.initialize() has set Config.DEVICE).
+        # Lazy-initialised DeepSORT tracker
         self._tracker: Optional[MultiObjectTracker] = None
 
-        # Per-track embedding smoothing: (int_cam_id, track_id) → deque
+        # Per-(camera_id_str, track_id_str) embedding smoothing
         self._embed_buf:        Dict[tuple, collections.deque] = {}
-        # Per-track counter to throttle DB / FAISS embedding updates
+        # Per-(camera_id_str, track_id_str) embedding update throttle counter
         self._embed_update_cnt: Dict[tuple, int]               = {}
 
         self._frame_idx: int = 0
 
-    # ── internal helpers ──────────────────────────────────────────────────────
-
-    def _ensure_tracker(self) -> None:
+    def _ensure_tracker(self, camera_id_str: str) -> None:
         """Lazily create the DeepSORT tracker on first use."""
         if self._tracker is None:
-            self._tracker = MultiObjectTracker(self._int_cam_id)
+            self._tracker = MultiObjectTracker(camera_id_str)
 
     def _match_det_to_track(
         self,
         track_bbox: List[float],
         raw_dets:   List[Dict],
     ) -> Optional[Dict]:
-        """Return the raw YOLO detection best-matching a track by IoU."""
+        """
+        Return the raw YOLO detection best-matching a track by IoU.
+        Used for FIX 3: X3D gets training-aligned YOLO crop, not Kalman box.
+        """
         best_det = None
         best_iou = 0.3   # minimum overlap threshold
         for det in raw_dets:
@@ -144,7 +124,7 @@ class InferenceRunner:
         camera_id: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
-        Process one BGR frame through the full pipeline.
+        Process one BGR frame through the full v2 pipeline.
 
         Args:
             frame_bgr:  BGR image as numpy array (any resolution).
@@ -157,9 +137,24 @@ class InferenceRunner:
         if not ai_service.is_ready():
             raise RuntimeError("AI Service not initialized")
 
-        self._ensure_tracker()
+        # ── Pin camera_id on first call ──────────────────────────────────────
+        # Use the stable MongoDB camera_id string as the camera key throughout
+        # FAISS / DB / state_machine.  Previously an auto-incrementing integer
+        # was used, which changed on every InferenceRunner construction causing
+        # every track to look like a new cross-camera identity.
+        if self._camera_id_str is None:
+            self._camera_id_str = str(camera_id) if camera_id is not None else "default"
+            logger.info(
+                "[InferenceRunner] Camera ID pinned as '%s'", self._camera_id_str
+            )
+
+        self._ensure_tracker(self._camera_id_str)
         start = time.time()
         self._frame_idx += 1
+
+        h, w      = frame_bgr.shape[:2]
+        frame_rgb = None   # RGB conversion deferred until needed for X3D
+
 
         # ── 1. Detect persons (GPU — inference_lock) ──────────────────────
         with ai_service.inference_lock:
@@ -168,7 +163,16 @@ class InferenceRunner:
         # ── 2. Track locally (per-instance, no shared state) ──────────────
         tracks = self._tracker.update(raw_dets, frame_bgr)
 
-        # ── 3. Crop person regions for ReID ───────────────────────────────
+        # ── 3. IoU-match tracks → raw YOLO bboxes (FIX 3) ─────────────────
+        # track_id normalised to str (FIX 1)
+        track_to_yolo_bbox: Dict[str, list] = {}
+        for t in tracks:
+            tid   = str(t["track_id"])
+            t_box = [float(v) for v in t["bbox"]]
+            matched = self._match_det_to_track(t_box, raw_dets)
+            track_to_yolo_bbox[tid] = matched["bbox"] if matched else t_box
+
+        # ── 4. Crop person regions for ReID ───────────────────────────────
         crops:        List[np.ndarray] = []
         valid_tracks: List[Dict]       = []
 
@@ -178,7 +182,7 @@ class InferenceRunner:
                 crops.append(crop)
                 valid_tracks.append(t)
 
-        # ── 4. Extract ReID embeddings (GPU — inference_lock) ─────────────
+        # ── 5. Extract ReID embeddings (GPU — inference_lock) ─────────────
         embeddings: List[Optional[np.ndarray]] = []
         if crops:
             with ai_service.inference_lock:
@@ -186,17 +190,15 @@ class InferenceRunner:
         else:
             embeddings = []
 
-        # ── 5. Match each track to a global ID ────────────────────────────
-        # results: list of {track_id, global_id, bbox, x3d_score, det_conf}
+        # ── 6. Match each track to a global ID ────────────────────────────
         results: List[Dict] = []
 
-        # Prevent Identity Hijacking: tracks within the SAME frame cannot share a global_id.
-        # Pre-pass: claim all existing global IDs first so new tracks can't steal them.
+        # Hijack prevention pre-pass: claim already-known global IDs first.
         used_global_ids = set()
         with ai_service.state_lock:
             for track_info in valid_tracks:
                 existing_gid = ai_service.db.get_global_id_for_track(
-                    self._int_cam_id, track_info["track_id"]
+                    self._camera_id_str, str(track_info["track_id"])
                 )
                 if existing_gid is not None:
                     used_global_ids.add(existing_gid)
@@ -205,11 +207,11 @@ class InferenceRunner:
             if embedding is None:
                 continue
 
-            track_id = track_info["track_id"]
+            track_id = str(track_info["track_id"])   # FIX 1
             bbox     = [float(v) for v in track_info["bbox"]]
-            key      = (self._int_cam_id, track_id)
+            key      = (self._camera_id_str, track_id)
 
-            # Smooth embedding over last 10 frames (per-instance, no lock)
+            # 10-frame embedding smoothing (per-instance, no lock)
             if key not in self._embed_buf:
                 self._embed_buf[key] = collections.deque(maxlen=10)
             self._embed_buf[key].append(embedding)
@@ -221,7 +223,7 @@ class InferenceRunner:
             # Assign global ID (state_lock guards matcher + shared dicts)
             with ai_service.state_lock:
                 existing_gid = ai_service.db.get_global_id_for_track(
-                    self._int_cam_id, track_id
+                    self._camera_id_str, track_id
                 )
 
                 if existing_gid is not None:
@@ -230,21 +232,21 @@ class InferenceRunner:
                     if cnt % Config.EMBEDDING_UPDATE_INTERVAL == 0:
                         ai_service.db.update_identity(
                             existing_gid, smoothed,
-                            self._int_cam_id, track_id,
+                            self._camera_id_str, track_id,
                         )
                         ai_service.matcher.add_embedding(
-                            smoothed, existing_gid, self._int_cam_id
+                            smoothed, existing_gid, self._camera_id_str
                         )
                     self._embed_update_cnt[key] = cnt + 1
                     global_id = existing_gid
 
                 else:
-                    # New track — query FAISS + DB for a match
+                    # New track — dual-strategy match (FAISS + DB)
                     faiss_gid, faiss_score = ai_service.matcher.query(
-                        smoothed, self._int_cam_id
+                        smoothed, self._camera_id_str
                     )
                     db_gid, db_score = ai_service.db.find_match(
-                        smoothed, self._int_cam_id
+                        smoothed, self._camera_id_str
                     )
 
                     best_match_gid = None
@@ -253,40 +255,44 @@ class InferenceRunner:
                     elif db_gid is not None:
                         best_match_gid = db_gid
 
-                    # HIJACK PREVENTION: If the best match is already physically present
-                    # in this frame, they cannot be the same person. Reject the match.
+                    # HIJACK PREVENTION
                     if best_match_gid is not None and best_match_gid in used_global_ids:
-                        print(f"🚫 [FAISS] DeepSORT ID {track_id} matched Global ID {best_match_gid}, but it's already in the frame! Rejecting.")
+                        logger.debug(
+                            "[FAISS] Track %s matched GID %s already in frame - rejected",
+                            track_id, best_match_gid,
+                        )
                         global_id = None
                     else:
                         global_id = best_match_gid
 
-                    print(f"🧬 [FAISS] DeepSORT ID {track_id} | Matched Global ID {global_id} | FAISS Score: {faiss_score} | DB Score: {db_score}")
+                    logger.debug(
+                        "[FAISS] Track %s -> GID %s | FAISS %.3f | DB %.3f",
+                        track_id, global_id, faiss_score, db_score,
+                    )
 
                     if global_id is not None:
                         ai_service.db.update_identity(
-                            global_id, smoothed, self._int_cam_id, track_id
+                            global_id, smoothed, self._camera_id_str, track_id
                         )
                         ai_service.matcher.add_embedding(
-                            smoothed, global_id, self._int_cam_id
+                            smoothed, global_id, self._camera_id_str
                         )
                     else:
-                        # Register brand-new identity
                         global_id = ai_service.db.register_new_identity(
-                            smoothed, self._int_cam_id, track_id
+                            smoothed, self._camera_id_str, track_id
                         )
                         ai_service.matcher.add_embedding(
-                            smoothed, global_id, self._int_cam_id
+                            smoothed, global_id, self._camera_id_str
                         )
 
-                    # Mark this ID as claimed so subsequent new tracks in this frame can't take it
                     used_global_ids.add(global_id)
 
-                    # Ensure per-global-id score tracking slots exist
+                    # Ensure legacy per-global-id score tracking slots exist
                     ai_service.theft_scores.setdefault(global_id, None)
                     ai_service.x3d_frame_counters.setdefault(global_id, 0)
 
-            # Resolve detection confidence via IoU match
+
+            yolo_bbox = track_to_yolo_bbox.get(track_id, bbox)
             matched_det = self._match_det_to_track(bbox, raw_dets)
             det_conf    = matched_det["confidence"] if matched_det else 0.0
 
@@ -294,136 +300,150 @@ class InferenceRunner:
                 "track_id":  track_id,
                 "global_id": global_id,
                 "bbox":      bbox,
-                "crop":      crops[i],
+                "yolo_bbox": yolo_bbox,
                 "det_conf":  det_conf,
-                "x3d_score": 0.0,   # filled in step 7
             })
-            print(f"👀 [RE-ID CHECK] Local DeepSORT ID: {track_id} -> Global ID: {global_id}")
 
-        # ── 6. Feed crops into ClipBuffer (state_lock) ────────────────────
+        # ── 7. Push frames to GlobalTheftDetector (FIX 2 — dense fill) ────
+        # Convert BGR frame to RGB once, shared across all push_frame calls.
+        import cv2
+        if results:
+            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
+
         with ai_service.state_lock:
             for res in results:
-                ai_service.clip_buffer.add_frame(res["global_id"], res["crop"])
+                gid = res["global_id"]
+                if gid is None:
+                    continue
+                ai_service.theft_detector.push_frame(
+                    global_id   = gid,
+                    frame_rgb   = frame_rgb,
+                    bbox        = res["yolo_bbox"],   # FIX 3: YOLO bbox
+                    frame_shape = (h, w),
+                )
 
-        # ── 7. X3D inference per global ID ────────────────────────────────
-        # Run every Config.X3D_INFERENCE_EVERY frames per global_id.
-        # get_clip() returns None until the buffer holds >= X3D_CLIP_FRAMES
-        # frames, so no X3D call is wasted on short tracks.
-        # Uniform temporal subsampling to SAMPLED_FRAMES=180 is done inside
-        # ClipBuffer.get_clip() — we never touch that logic here.
+        # ── 8. X3D inference via GlobalTheftDetector ──────────────────────
+        # maybe_infer() checks should_infer() internally; no wasted GPU calls.
         for res in results:
             gid = res["global_id"]
+            if gid is None:
+                continue
 
+            # Run under inference_lock (GPU forward pass)
+            with ai_service.inference_lock:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+                # maybe_infer acquires no external lock — state is per-identity
+                theft_state = ai_service.theft_detector.maybe_infer(gid)
+
+            # Update legacy score dict under state_lock
             with ai_service.state_lock:
-                cnt = ai_service.x3d_frame_counters.get(gid, 0) + 1
-                ai_service.x3d_frame_counters[gid] = cnt
-                should_run = (cnt % Config.X3D_INFERENCE_EVERY == 0)
-                clip = ai_service.clip_buffer.get_clip(gid) if should_run else None
-
-            if clip is not None:
-                # GPU call under inference_lock
-                with ai_service.inference_lock:
-                    import torch
-                    if torch.cuda.is_available():
-                        torch.cuda.empty_cache()  # Force VRAM defragmentation for X3D tensor allocation
-                    score = ai_service.x3d.predict(clip)
-                # Store result under state_lock
-                with ai_service.state_lock:
-                    ai_service.theft_scores[gid] = score
-                res["x3d_score"] = score
-                logger.debug(
-                    "X3D G:%d  score=%.3f  (frame %d)", gid, score, self._frame_idx
+                ai_service.theft_scores[gid] = theft_state.last_score
+                ai_service.x3d_frame_counters[gid] = (
+                    ai_service.x3d_frame_counters.get(gid, 0) + 1
                 )
-            else:
-                # Use last known score for this global ID
-                with ai_service.state_lock:
-                    last = ai_service.theft_scores.get(gid)
-                res["x3d_score"] = float(last) if last is not None else 0.0
 
-        # ── 8. Build classification result ────────────────────────────────
-        # Clarification #1 — only >= 0.80 triggers "theft"; >= 0.50 is
-        # "normal" but flagged as suspicious in metadata.
-        highest_score = max((r["x3d_score"] for r in results), default=0.0)
+            res["theft_state"] = theft_state
+            res["x3d_score"]   = theft_state.last_score
+
+        # ── 9. Build classification result ────────────────────────────────
+        highest_score = max(
+            (r.get("x3d_score", 0.0) for r in results), default=0.0
+        )
 
         classification = "normal"
         confidence     = highest_score
 
-        if highest_score >= Config.X3D_THEFT_THRESHOLD:
+        # Theft confirmed when TheftState.is_theft or in_cooldown
+        any_theft_confirmed = any(
+            r.get("theft_state") and (
+                r["theft_state"].is_theft or r["theft_state"].in_cooldown
+            )
+            for r in results
+        )
+
+        if any_theft_confirmed:
             # Check if all high-scoring persons are ALREADY active thieves
             all_known = True
             for res in results:
-                if res["x3d_score"] >= Config.X3D_THEFT_THRESHOLD:
+                ts = res.get("theft_state")
+                if ts and (ts.is_theft or ts.in_cooldown):
                     gid = res["global_id"]
                     if gid is None or not ai_service.is_active_thief(gid):
                         all_known = False
                         if gid is not None:
                             ai_service.add_active_thief(gid)
-            
-            # If there's at least one new thief (or an un-ID'd thief), trigger the alert!
             if not all_known:
                 classification = "theft"
 
-        # Check global registry explicitly for all persons
+        # ── 10. Build suspicious_tracks ────────────────────────────────────
         suspicious_tracks = []
         for res in results:
-            # Base suspicion on X3D score
-            is_susp = res["x3d_score"] >= Config.X3D_SUSPICIOUS_THRESHOLD
-            
-            # This must run for EVERY person, even if their x3d_score is 0.0
-            if res["global_id"] is not None:
-                is_thief = ai_service.is_active_thief(str(res["global_id"])) or ai_service.is_active_thief(res["global_id"])
-                # print(f"🔒 [REGISTRY] Checking Global ID {res['global_id']} | Is Active Thief? {is_thief}")
-                if is_thief:
+            gid = res["global_id"]
+            ts  = res.get("theft_state")
+
+            # Determine suspicion from TheftState or x3d_score threshold
+            is_susp = False
+            if ts and (ts.is_theft or ts.in_cooldown or ts.consecutive_theft > 0):
+                is_susp = True
+            elif res.get("x3d_score", 0.0) >= Config.X3D_SUSPICIOUS_THRESHOLD:
+                is_susp = True
+
+            # Override: known thief in registry → always suspicious
+            if gid is not None:
+                if ai_service.is_active_thief(str(gid)) or ai_service.is_active_thief(gid):
                     is_susp = True
-                
+
             res["is_suspicious"] = is_susp
-            
+
             if is_susp:
                 suspicious_tracks.append({
                     "track_id":  res["track_id"],
-                    "global_id": res["global_id"],
-                    "x3d_score": res["x3d_score"],
+                    "global_id": gid,
+                    "x3d_score": res.get("x3d_score", 0.0),
                 })
 
-        # ── 9. Periodic maintenance ───────────────────────────────────────
+        # ── 11. Periodic maintenance ──────────────────────────────────────
         if self._frame_idx % self._PRUNE_EVERY == 0:
             ai_service.prune_expired_identities()
         if self._frame_idx % self._REBUILD_EVERY == 0:
             ai_service.rebuild_matcher_index()
-            
-        if self._frame_idx % 30 == 0:
-            with ai_service.state_lock:
-                ai_service.clip_buffer.cleanup_stale_buffers()
 
-        # ── 10. Assemble return dict (API contract preserved) ─────────────
+        # ── 12. Assemble return dict (API contract preserved) ─────────────
         processing_time = (time.time() - start) * 1000.0
 
-        # tracks list: include global_id as required by clarification #3
         tracks_out = []
         for res in results:
-            # 1. Determine base suspicion from current frame's AI score
-            is_susp = res.get("x3d_score", 0.0) >= Config.X3D_SUSPICIOUS_THRESHOLD
+            gid = res["global_id"]
+            ts  = res.get("theft_state")
 
-            # 2. OVERRIDE: If they are a known thief in the registry, they are always suspicious
-            if res["global_id"] is not None:
-                # Ensure we cast to string just in case the cache returns strings
-                if ai_service.is_active_thief(str(res["global_id"])) or ai_service.is_active_thief(res["global_id"]):
+            is_susp = res.get("is_suspicious", False)
+            if gid is not None:
+                if ai_service.is_active_thief(str(gid)) or ai_service.is_active_thief(gid):
                     is_susp = True
 
             track_dict = {
-                "track_id":  res["track_id"],
-                "global_id": res["global_id"],
-                "bbox":      res["bbox"],
-                "class":     "person",
-                "confidence": res["det_conf"],
-                "x3d_score": res["x3d_score"],
-                "is_suspicious": bool(is_susp),
+                "track_id":          res["track_id"],
+                "global_id":         gid,
+                "bbox":              res["bbox"],
+                "class":             "person",
+                "confidence":        res["det_conf"],
+                "x3d_score":         res.get("x3d_score", 0.0),
+                "is_suspicious":     bool(is_susp),
+                # v2 extra fields from TheftState
+                "is_theft":          bool(ts.is_theft)     if ts else False,
+                "in_cooldown":       bool(ts.in_cooldown)  if ts else False,
+                "consecutive_theft": (ts.consecutive_theft if ts else 0),
+                "theft_label":       (ts.label             if ts else "Buffering..."),
             }
-            
-            # Debug print for known thieves
+
             if track_dict.get("global_id") is not None and track_dict["is_suspicious"]:
-                print(f"📡 [PAYLOAD] Sending Global ID {track_dict['global_id']} with is_suspicious=True")
-                
+                logger.debug(
+                    "📡 [PAYLOAD] GID %s is_suspicious=True  theft=%s",
+                    track_dict["global_id"], track_dict["is_theft"],
+                )
+
             tracks_out.append(track_dict)
 
         frame_metadata: Dict[str, Any] = {
@@ -434,14 +454,13 @@ class InferenceRunner:
             "num_persons":    len(results),
             "raw_x3d_score":  highest_score,
         }
-        # Add suspicious flag when score is in [0.50, 0.80)
         if highest_score >= Config.X3D_SUSPICIOUS_THRESHOLD:
             frame_metadata["suspicious"] = True
 
         return {
             "classification":     classification,
             "confidence":         confidence,
-            "detections":         [
+            "detections": [
                 {
                     "bbox":       [float(v) for v in d["bbox"]],
                     "confidence": d["confidence"],
@@ -450,14 +469,14 @@ class InferenceRunner:
                 }
                 for d in raw_dets
             ],
-            "poses":              [],       # no pose model in new pipeline
+            "poses":              [],
             "tracks":             tracks_out,
             "suspicious_tracks":  suspicious_tracks,
             "frame_metadata":     frame_metadata,
             "processing_time_ms": processing_time,
         }
 
-    # Backward-compatible alias — views.py calls runner.process_frame(...)
+    # Backward-compatible alias
     process_frame = run_inference
 
     def reset(self) -> None:

@@ -1,8 +1,11 @@
 """
 Person Detection Module — YOLOv8 (Ultralytics).
 
+Source: Updated_AI_Engine_v2 (identical logic kept with full docstrings).
+
 Detects persons in a frame and returns bounding boxes + confidence scores.
-Only the 'person' class (COCO class 0) is kept.
+Only the 'person' class (COCO class 0) is returned.
+Supports single-frame and batch inference.
 """
 
 import numpy as np
@@ -11,43 +14,39 @@ from ai_pipeline.ai_config.config import Config
 
 
 class PersonDetector:
-    """YOLOv8-based person detector optimized for real-time inference."""
+    """YOLOv8-based person detector optimised for real-time inference."""
 
     def __init__(self):
         """
-        Initialize the YOLOv8 model.
-        Downloads the model weights automatically on first run.
+        Initialize YOLOv8.
+        Weights are downloaded automatically on first run if not found.
         """
-        self.model = YOLO(Config.YOLO_MODEL)
-        # Move to device (GPU if available)
+        self.model            = YOLO(Config.YOLO_MODEL)
         self.model.to(Config.DEVICE)
-        self.conf_threshold = Config.YOLO_CONFIDENCE
-        self.iou_threshold = Config.YOLO_IOU_THRESHOLD
-        self.person_class_id = Config.YOLO_PERSON_CLASS_ID
-        self.img_size = Config.YOLO_IMG_SIZE
+        self.conf_threshold   = Config.YOLO_CONFIDENCE
+        self.iou_threshold    = Config.YOLO_IOU_THRESHOLD
+        self.person_class_id  = Config.YOLO_PERSON_CLASS_ID
+        self.img_size         = Config.YOLO_IMG_SIZE
 
-        print(f"[Detector] YOLOv8 loaded: {Config.YOLO_MODEL} on {Config.DEVICE}")
+        print(f"[Detector] YOLOv8 loaded: {Config.YOLO_MODEL} on {Config.DEVICE}  "
+              f"conf={self.conf_threshold}")
 
-    def detect(self, frame: np.ndarray) -> list[dict]:
+    def detect(self, frame: np.ndarray) -> list:
         """
         Run person detection on a single frame.
 
         Args:
-            frame: BGR image as numpy array (H, W, 3).
+            frame: BGR image (H, W, 3).
 
         Returns:
-            List of detections, each a dict with keys:
-                - 'bbox': [x1, y1, x2, y2] (pixel coords, int)
-                - 'confidence': float
-                - 'class_id': int (always 0 for person)
+            List of dicts: {'bbox': [x1,y1,x2,y2], 'confidence': float, 'class_id': int}
         """
-        # Run inference — verbose=False suppresses per-frame logs
         results = self.model(
             frame,
             conf=self.conf_threshold,
             iou=self.iou_threshold,
             imgsz=self.img_size,
-            classes=[self.person_class_id],  # Only detect persons
+            classes=[self.person_class_id],
             verbose=False,
         )
 
@@ -56,22 +55,18 @@ class PersonDetector:
             boxes = result.boxes
             if boxes is None or len(boxes) == 0:
                 continue
-
             for box in boxes:
-                # Extract bounding box (xyxy format)
                 x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                conf = float(box.conf[0].cpu().numpy())
+                conf   = float(box.conf[0].cpu().numpy())
                 cls_id = int(box.cls[0].cpu().numpy())
-
                 detections.append({
-                    "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                    "bbox":       [int(x1), int(y1), int(x2), int(y2)],
                     "confidence": conf,
-                    "class_id": cls_id,
+                    "class_id":   cls_id,
                 })
-
         return detections
 
-    def detect_batch(self, frames: list[np.ndarray]) -> list[list[dict]]:
+    def detect_batch(self, frames: list) -> list:
         """
         Run person detection on a batch of frames.
 
@@ -92,19 +87,17 @@ class PersonDetector:
 
         all_detections = []
         for result in results:
-            frame_detections = []
+            frame_dets = []
             boxes = result.boxes
             if boxes is not None and len(boxes) > 0:
                 for box in boxes:
                     x1, y1, x2, y2 = box.xyxy[0].cpu().numpy().astype(int)
-                    conf = float(box.conf[0].cpu().numpy())
+                    conf   = float(box.conf[0].cpu().numpy())
                     cls_id = int(box.cls[0].cpu().numpy())
-
-                    frame_detections.append({
-                        "bbox": [int(x1), int(y1), int(x2), int(y2)],
+                    frame_dets.append({
+                        "bbox":       [int(x1), int(y1), int(x2), int(y2)],
                         "confidence": conf,
-                        "class_id": cls_id,
+                        "class_id":   cls_id,
                     })
-            all_detections.append(frame_detections)
-
+            all_detections.append(frame_dets)
         return all_detections

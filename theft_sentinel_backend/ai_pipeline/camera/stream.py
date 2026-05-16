@@ -1,19 +1,22 @@
 """
 Camera Stream Handler Module.
 
-Provides threaded camera stream readers for:
-    - Video files
-    - RTSP streams
-    - USB/webcam devices
+Source: Updated_AI_Engine_v2 / New_MCMT (best multi-camera handling logic).
 
-Each camera runs in its own thread for async, non-blocking frame capture.
+Provides threaded camera stream readers for:
+    - Video files (loops on EOF)
+    - RTSP / HTTP network streams (reconnects on drop, drains buffer with grab())
+    - USB / webcam integer device indices
+
+Each camera runs in its own daemon thread for async, non-blocking frame capture.
+The main processing loop always receives the latest available frame.
 """
 
 import cv2
 import time
 import threading
 import numpy as np
-from config.config import Config
+from ai_pipeline.ai_config.config import Config
 
 
 class CameraStream:
@@ -29,20 +32,31 @@ class CameraStream:
         Initialize a camera stream.
 
         Args:
-            source: Video file path (str), RTSP URL (str), or device index (int).
+            source: Video file path (str), RTSP/HTTP URL (str), or device index (int).
             camera_id: Unique identifier for this camera.
         """
-        self.source = source
+        self.source    = source
         self.camera_id = camera_id
-        self.cap = None
-        self._frame = None
-        self._lock = threading.Lock()
-        self._running = False
-        self._thread = None
-        self._frame_count = 0
-        self._fps = 0.0
-        self._last_fps_time = time.time()
+        self.cap       = None
+        self._frame    = None
+        self._lock     = threading.Lock()
+        self._running  = False
+        self._thread   = None
+
+        self._frame_count     = 0
+        self._fps             = 0.0
+        self._last_fps_time   = time.time()
         self._fps_frame_count = 0
+
+        self._is_network_source = self._check_network_source(source)
+
+    @staticmethod
+    def _check_network_source(source) -> bool:
+        """Return True if the source is a network stream (RTSP, HTTP, HTTPS)."""
+        if isinstance(source, str):
+            lower = source.lower()
+            return lower.startswith(("rtsp://", "rtsps://", "http://", "https://"))
+        return False
 
     def start(self) -> bool:
         """
@@ -53,49 +67,63 @@ class CameraStream:
         """
         self.cap = cv2.VideoCapture(self.source)
 
+        # Minimize internal buffer for network streams to prevent frame buildup
+        if self._is_network_source:
+            self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+
         if not self.cap.isOpened():
             print(f"[Camera {self.camera_id}] ERROR: Cannot open source: {self.source}")
             return False
 
-        # Get source properties
-        src_fps = self.cap.get(cv2.CAP_PROP_FPS)
-        src_width = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
-        src_height = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+        src_fps      = self.cap.get(cv2.CAP_PROP_FPS)
+        src_width    = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH))
+        src_height   = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
         total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
 
         print(f"[Camera {self.camera_id}] Opened: {self.source}")
-        print(f"  Resolution: {src_width}x{src_height}, FPS: {src_fps:.1f}, "
-              f"Total frames: {total_frames}")
+        print(f"  Resolution: {src_width}x{src_height}  FPS: {src_fps:.1f}  "
+              f"Total frames: {total_frames}  Network: {self._is_network_source}")
 
         self._running = True
-        self._thread = threading.Thread(target=self._capture_loop, daemon=True)
+        self._thread  = threading.Thread(target=self._capture_loop, daemon=True)
         self._thread.start()
-
         return True
 
     def _capture_loop(self):
-        """Background thread: continuously read frames from the source."""
+        """
+        Background thread: continuously read frames from the source.
+
+        Network streams: grab() drains the buffer at full speed, then retrieve()
+        returns the freshest frame — prevents stale frames accumulating.
+        File sources: rate-limited to TARGET_FPS; loop back to start on EOF.
+        """
         target_interval = 1.0 / Config.TARGET_FPS if Config.TARGET_FPS > 0 else 0
 
         while self._running:
             start_time = time.time()
 
-            ret, frame = self.cap.read()
-
-            if not ret:
-                # For video files, loop back to the beginning
-                if isinstance(self.source, str) and not self.source.startswith("rtsp"):
-                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
-                    continue
-                else:
-                    print(f"[Camera {self.camera_id}] Stream ended or lost connection")
+            if self._is_network_source:
+                grabbed = self.cap.grab()
+                if not grabbed:
+                    print(f"[Camera {self.camera_id}] Stream lost — reconnecting...")
                     time.sleep(1.0)
-                    # Try to reconnect for RTSP
                     self.cap.release()
                     self.cap = cv2.VideoCapture(self.source)
+                    self.cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                     continue
+                ret, frame = self.cap.retrieve()
+            else:
+                ret, frame = self.cap.read()
 
-            # Resize for consistent processing
+            if not ret or frame is None:
+                if not self._is_network_source:
+                    # Video file — loop
+                    self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+                else:
+                    time.sleep(0.1)
+                continue
+
+            # Resize to configured processing resolution
             if frame.shape[1] != Config.FRAME_WIDTH or frame.shape[0] != Config.FRAME_HEIGHT:
                 frame = cv2.resize(frame, (Config.FRAME_WIDTH, Config.FRAME_HEIGHT))
 
@@ -103,18 +131,19 @@ class CameraStream:
                 self._frame = frame
                 self._frame_count += 1
 
-            # FPS calculation
+            # Per-second FPS calculation
             self._fps_frame_count += 1
             now = time.time()
             if now - self._last_fps_time >= 1.0:
                 self._fps = self._fps_frame_count / (now - self._last_fps_time)
                 self._fps_frame_count = 0
-                self._last_fps_time = now
+                self._last_fps_time   = now
 
-            # Rate limiting
-            elapsed = time.time() - start_time
-            if elapsed < target_interval:
-                time.sleep(target_interval - elapsed)
+            # Rate-limit only for file sources; network sources drain as fast as possible
+            if not self._is_network_source:
+                elapsed = time.time() - start_time
+                if elapsed < target_interval:
+                    time.sleep(target_interval - elapsed)
 
     def get_frame(self) -> tuple[bool, np.ndarray | None]:
         """

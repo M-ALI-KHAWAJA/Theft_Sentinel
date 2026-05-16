@@ -16,12 +16,159 @@ import tempfile
 import time
 import threading
 import logging
+import numpy as np
 from collections import deque
 from typing import Dict, Optional
 from urllib.parse import urlparse
 from django.utils import timezone
 
 logger = logging.getLogger(__name__)
+
+
+# ── MJPEG-over-HTTP reader (pure requests — bypasses OpenCV/FFmpeg) ─────────
+# cv2.VideoCapture fails for IP-Webcam/DroidCam HTTP streams because the
+# global OPENCV_FFMPEG_CAPTURE_OPTIONS contains RTSP-only options that
+# corrupt FFmpeg's HTTP handling, and every other OpenCV backend
+# (GSTREAMER, MSMF, MJPEG) is either unavailable or unsupported.
+# requests.get() with stream=True works reliably for any MJPEG source.
+
+class MJPEGCapture:
+    """
+    Drop-in cv2.VideoCapture replacement for MJPEG-over-HTTP streams.
+
+    Reads a multipart/x-mixed-replace MJPEG stream from a URL using
+    requests streaming — completely bypasses all OpenCV video backends
+    and the OPENCV_FFMPEG_CAPTURE_OPTIONS env-var that breaks FFmpeg
+    for HTTP connections on this system.
+
+    Exposes the minimal interface used by ContinuousMonitor:
+        isOpened() -> bool
+        read()     -> (bool, np.ndarray | None)
+        release()
+        set()      -> (no-op, accepted for compat)
+        getBackendName() -> str
+    """
+
+    _CONNECT_TIMEOUT = 5.0    # seconds to establish TCP connection
+    _READ_TIMEOUT    = 10.0   # seconds between received bytes
+    _CHUNK_SIZE      = 4096   # bytes per requests.iter_content chunk
+    _MAX_FRAME_BYTES = 4 * 1024 * 1024  # 4 MB safety cap per JPEG
+
+    def __init__(self, url: str):
+        self._url      = url
+        self._response = None
+        self._iter     = None
+        self._buf      = b""
+        self._opened   = False
+        self._open()
+
+    def _open(self) -> None:
+        """Establish the streaming HTTP connection."""
+        try:
+            import requests
+            self._response = requests.get(
+                self._url,
+                stream=True,
+                timeout=(self._CONNECT_TIMEOUT, self._READ_TIMEOUT),
+                headers={"Connection": "keep-alive"},
+            )
+            if self._response.status_code == 200:
+                self._iter   = self._response.iter_content(chunk_size=self._CHUNK_SIZE)
+                self._opened = True
+                logger.info(
+                    "[MJPEGCapture] Connected to %s  content-type=%s",
+                    self._url,
+                    self._response.headers.get("Content-Type", "unknown"),
+                )
+            else:
+                logger.error(
+                    "[MJPEGCapture] HTTP %d for %s",
+                    self._response.status_code, self._url,
+                )
+                self._response.close()
+        except Exception as exc:
+            logger.error("[MJPEGCapture] Connection failed for %s: %s", self._url, exc)
+
+    def isOpened(self) -> bool:      # noqa: N802
+        return self._opened
+
+    def getBackendName(self) -> str:  # noqa: N802
+        return "MJPEG-requests"
+
+    def set(self, *args, **kwargs):   # accepted for compat — no-op
+        return True
+
+    def read(self):
+        """
+        Read the next JPEG frame from the MJPEG stream.
+
+        Scans the raw byte stream for the JPEG SOI (\xff\xd8) and
+        EOI (\xff\xd9) markers and decodes the enclosed JPEG.
+
+        Returns:
+            (True, frame_bgr)  on success
+            (False, None)      on end-of-stream or error
+        """
+        if not self._opened or self._iter is None:
+            return False, None
+
+        try:
+            while True:
+                # Feed the buffer until we have a complete JPEG
+                try:
+                    chunk = next(self._iter)
+                    self._buf += chunk
+                except StopIteration:
+                    self._opened = False
+                    return False, None
+
+                # Safety cap — discard obviously corrupt data
+                if len(self._buf) > self._MAX_FRAME_BYTES:
+                    logger.warning(
+                        "[MJPEGCapture] Buffer exceeded %d B — discarding",
+                        self._MAX_FRAME_BYTES,
+                    )
+                    self._buf = b""
+                    continue
+
+                # Look for JPEG SOI + EOI pair
+                start = self._buf.find(b"\xff\xd8")
+                if start == -1:
+                    # No JPEG start yet — discard leading garbage
+                    self._buf = b""
+                    continue
+
+                end = self._buf.find(b"\xff\xd9", start + 2)
+                if end == -1:
+                    # Incomplete JPEG — keep buffering
+                    continue
+
+                # Extract exactly one JPEG
+                jpeg_bytes = self._buf[start : end + 2]
+                self._buf   = self._buf[end + 2:]    # keep remainder
+
+                jpg_array = np.frombuffer(jpeg_bytes, dtype=np.uint8)
+                frame     = cv2.imdecode(jpg_array, cv2.IMREAD_COLOR)
+                if frame is not None:
+                    return True, frame
+                # Corrupt JPEG — try next
+
+        except Exception as exc:
+            logger.warning("[MJPEGCapture] read() error: %s", exc)
+            self._opened = False
+            return False, None
+
+    def release(self) -> None:
+        self._opened = False
+        self._iter   = None
+        self._buf    = b""
+        if self._response is not None:
+            try:
+                self._response.close()
+            except Exception:
+                pass
+            self._response = None
+        logger.debug("[MJPEGCapture] Released %s", self._url)
 
 
 class ContinuousMonitor:
@@ -122,17 +269,18 @@ class ContinuousMonitor:
             'last_result': self.last_result,
         }
     
-    def _open_capture_for_url(self, url: str) -> Optional[cv2.VideoCapture]:
+    def _open_capture_for_url(self, url: str):
         """
-        Open a VideoCapture using the correct backend for the URL scheme.
+        Open the correct capture object for the URL scheme.
 
           RTSP/RTSPS  → cv2.VideoCapture(url, CAP_FFMPEG)
                          OPENCV_FFMPEG_CAPTURE_OPTIONS (TCP, stimeout) apply.
-          HTTP/HTTPS  → cv2.VideoCapture(url)
-                         No FFmpeg RTSP options — plain auto-select backend.
+          HTTP/HTTPS  → MJPEGCapture(url)  ← pure-Python MJPEG reader
+                         Bypasses all OpenCV/FFmpeg backends to avoid the
+                         RTSP env-var options that corrupt HTTP connections.
 
         isOpened() is ALWAYS checked BEFORE getBackendName().
-        Returns a ready VideoCapture, or None on failure.
+        Returns the capture object, or None on failure.
         """
         scheme = urlparse(url).scheme.lower()
 
@@ -142,43 +290,71 @@ class ContinuousMonitor:
                 self.camera_id, url,
             )
             cap = cv2.VideoCapture(url, cv2.CAP_FFMPEG)
+
+            if not cap.isOpened():
+                logger.error(
+                    "[ContinuousMonitor] Failed to open RTSP stream for camera %s: %s",
+                    self.camera_id, url,
+                )
+                cap.release()
+                return None
+
+            backend = cap.getBackendName()
+            if backend != "FFMPEG":
+                logger.warning(
+                    "[ContinuousMonitor] Non-FFmpeg backend '%s' for RTSP camera %s",
+                    backend, self.camera_id,
+                )
+            logger.info(
+                "[ContinuousMonitor] RTSP stream opened for camera %s (backend=%s)",
+                self.camera_id, backend,
+            )
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            return cap
+
         elif scheme in ("http", "https"):
             logger.info(
-                "[ContinuousMonitor] Opening HTTP stream for camera %s: %s",
+                "[ContinuousMonitor] Opening HTTP stream for camera %s "
+                "(pure-Python MJPEG reader): %s",
                 self.camera_id, url,
             )
-            cap = cv2.VideoCapture(url)
+            cap = MJPEGCapture(url)
+            if cap.isOpened():
+                logger.info(
+                    "[ContinuousMonitor] HTTP stream opened for camera %s "
+                    "(backend=%s)",
+                    self.camera_id, cap.getBackendName(),
+                )
+                return cap
+
+            # MJPEGCapture failed — last resort: cv2.VideoCapture auto-select
+            logger.warning(
+                "[ContinuousMonitor] MJPEGCapture failed for camera %s "
+                "— falling back to cv2.VideoCapture: %s",
+                self.camera_id, url,
+            )
+            cap2 = cv2.VideoCapture(url)
+            if not cap2.isOpened():
+                logger.error(
+                    "[ContinuousMonitor] Failed to open HTTP stream for camera %s: %s",
+                    self.camera_id, url,
+                )
+                cap2.release()
+                return None
+            cap2.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            logger.info(
+                "[ContinuousMonitor] HTTP stream opened for camera %s "
+                "(fallback backend=%s)",
+                self.camera_id, cap2.getBackendName(),
+            )
+            return cap2
+
         else:
             logger.error(
                 "[ContinuousMonitor] Unsupported protocol '%s' for camera %s: %s",
                 scheme, self.camera_id, url,
             )
             return None
-
-        # ── CRITICAL: isOpened() BEFORE getBackendName() ──────────────────
-        # getBackendName() internally asserts api != 0 and crashes when the
-        # VideoCapture failed to open.
-        if not cap.isOpened():
-            logger.error(
-                "[ContinuousMonitor] Failed to open %s stream for camera %s: %s",
-                scheme.upper(), self.camera_id, url,
-            )
-            cap.release()
-            return None
-
-        # Safe to query backend only after isOpened() returned True
-        backend = cap.getBackendName()
-        if scheme in ("rtsp", "rtsps") and backend != "FFMPEG":
-            logger.warning(
-                "[ContinuousMonitor] Non-FFmpeg backend '%s' for RTSP camera %s",
-                backend, self.camera_id,
-            )
-        logger.info(
-            "[ContinuousMonitor] Stream opened for camera %s (scheme=%s backend=%s)",
-            self.camera_id, scheme, backend,
-        )
-        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
-        return cap
 
     def _capture_loop(self):
         """
