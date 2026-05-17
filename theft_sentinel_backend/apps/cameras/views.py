@@ -6,7 +6,6 @@ from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
 from django.http import StreamingHttpResponse, JsonResponse
 import logging
-import requests
 
 from .stream_manager import stream_manager
 
@@ -133,14 +132,11 @@ class CameraStreamURLView(views.APIView):
                 status=404
             )
         
-        # Determine the best stream URL
+        # Use the raw URL exactly as stored in the database.
+        # The correct endpoint (e.g. /video for IP Webcam, /mjpegfeed for DroidCam)
+        # must be included in the camera's rtsp_url field — never auto-appended here.
         stream_url = camera.rtsp_url
-        
-        # For HTTP streams, add /video endpoint
-        if stream_url.startswith('http://') or stream_url.startswith('https://'):
-            if not stream_url.endswith('/video'):
-                stream_url = stream_url.rstrip('/') + '/video'
-        
+
         return JsonResponse({
             'camera_id': str(camera.id),
             'camera_name': camera.name,
@@ -187,83 +183,22 @@ class CameraFeedView(views.APIView):
                 status=503,
             )
 
-        # HTTP/HTTPS cameras (IP Webcam, DroidCam) — proxy the native MJPEG
-        # stream directly without touching cv2.VideoCapture at all.
-        rtsp_url = camera.rtsp_url
-        if rtsp_url.startswith('http://') or rtsp_url.startswith('https://'):
-            return self._proxy_http_stream(camera, rtsp_url, request)
-
-        # RTSP cameras — use the singleton stream manager
         camera_id = str(camera.id)
+        rtsp_url   = camera.rtsp_url
+
         logger.info(
-            "[CameraFeedView] Client connected for camera %s (id=%s)",
-            camera.name, camera_id,
+            "[CameraFeedView] Client connected for camera %s (id=%s) url=%s",
+            camera.name, camera_id, rtsp_url,
         )
 
+        # All protocols (HTTP DroidCam/IP Webcam and RTSP) go through the shared
+        # CameraStreamManager.  stream_manager owns the ONE connection to the
+        # camera source; this view reads from its frame cache.
+        # Opening a direct connection here would steal DroidCam's single-client
+        # slot and prevent stream_manager (and the AI monitor) from connecting.
         return StreamingHttpResponse(
             stream_manager.mjpeg_frame_generator(camera_id, rtsp_url),
             content_type='multipart/x-mixed-replace; boundary=frame',
         )
 
-    # ── HTTP/HTTPS stream proxy ───────────────────────────────────────────────
-
-    def _proxy_http_stream(self, camera, stream_url, request):
-        """
-        Proxy a native HTTP MJPEG stream (IP Webcam / DroidCam) directly to
-        the browser — zero re-encoding overhead.
-        """
-        possible_endpoints = ['/video', '/videofeed', '/shot.jpg', '/photoaf.jpg', '']
-
-        for endpoint in possible_endpoints:
-            test_url = stream_url.rstrip('/') + endpoint
-            try:
-                resp = requests.get(
-                    test_url,
-                    stream=True,
-                    timeout=5,
-                    headers={
-                        'Connection': 'keep-alive',
-                        'Cache-Control': 'no-cache, no-store, must-revalidate',
-                        'Pragma': 'no-cache',
-                    },
-                )
-                if resp.status_code != 200:
-                    continue
-
-                content_type = resp.headers.get('Content-Type', '')
-
-                # Native MJPEG — pass bytes straight through
-                if 'multipart' in content_type:
-                    logger.info(
-                        "[CameraFeedView] Proxying native MJPEG from %s for camera %s",
-                        test_url, camera.name,
-                    )
-
-                    def _proxy_gen(response=resp):
-                        try:
-                            for chunk in response.iter_content(chunk_size=8192):
-                                if chunk:
-                                    yield chunk
-                        except Exception as exc:
-                            logger.warning(
-                                "[CameraFeedView] HTTP proxy interrupted for camera %s: %s",
-                                camera.name, exc,
-                            )
-
-                    return StreamingHttpResponse(
-                        _proxy_gen(),
-                        content_type=content_type,
-                    )
-
-            except requests.exceptions.RequestException:
-                continue
-
-        # Fallback — redirect browser directly to the camera URL
-        from django.http import HttpResponseRedirect
-        fallback_url = stream_url.rstrip('/') + '/video'
-        logger.warning(
-            "[CameraFeedView] All HTTP endpoints failed for camera %s — redirecting to %s",
-            camera.name, fallback_url,
-        )
-        return HttpResponseRedirect(fallback_url)
 

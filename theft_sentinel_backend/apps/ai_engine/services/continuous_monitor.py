@@ -25,150 +25,8 @@ from django.utils import timezone
 logger = logging.getLogger(__name__)
 
 
-# ── MJPEG-over-HTTP reader (pure requests — bypasses OpenCV/FFmpeg) ─────────
-# cv2.VideoCapture fails for IP-Webcam/DroidCam HTTP streams because the
-# global OPENCV_FFMPEG_CAPTURE_OPTIONS contains RTSP-only options that
-# corrupt FFmpeg's HTTP handling, and every other OpenCV backend
-# (GSTREAMER, MSMF, MJPEG) is either unavailable or unsupported.
-# requests.get() with stream=True works reliably for any MJPEG source.
-
-class MJPEGCapture:
-    """
-    Drop-in cv2.VideoCapture replacement for MJPEG-over-HTTP streams.
-
-    Reads a multipart/x-mixed-replace MJPEG stream from a URL using
-    requests streaming — completely bypasses all OpenCV video backends
-    and the OPENCV_FFMPEG_CAPTURE_OPTIONS env-var that breaks FFmpeg
-    for HTTP connections on this system.
-
-    Exposes the minimal interface used by ContinuousMonitor:
-        isOpened() -> bool
-        read()     -> (bool, np.ndarray | None)
-        release()
-        set()      -> (no-op, accepted for compat)
-        getBackendName() -> str
-    """
-
-    _CONNECT_TIMEOUT = 5.0    # seconds to establish TCP connection
-    _READ_TIMEOUT    = 10.0   # seconds between received bytes
-    _CHUNK_SIZE      = 4096   # bytes per requests.iter_content chunk
-    _MAX_FRAME_BYTES = 4 * 1024 * 1024  # 4 MB safety cap per JPEG
-
-    def __init__(self, url: str):
-        self._url      = url
-        self._response = None
-        self._iter     = None
-        self._buf      = b""
-        self._opened   = False
-        self._open()
-
-    def _open(self) -> None:
-        """Establish the streaming HTTP connection."""
-        try:
-            import requests
-            self._response = requests.get(
-                self._url,
-                stream=True,
-                timeout=(self._CONNECT_TIMEOUT, self._READ_TIMEOUT),
-                headers={"Connection": "keep-alive"},
-            )
-            if self._response.status_code == 200:
-                self._iter   = self._response.iter_content(chunk_size=self._CHUNK_SIZE)
-                self._opened = True
-                logger.info(
-                    "[MJPEGCapture] Connected to %s  content-type=%s",
-                    self._url,
-                    self._response.headers.get("Content-Type", "unknown"),
-                )
-            else:
-                logger.error(
-                    "[MJPEGCapture] HTTP %d for %s",
-                    self._response.status_code, self._url,
-                )
-                self._response.close()
-        except Exception as exc:
-            logger.error("[MJPEGCapture] Connection failed for %s: %s", self._url, exc)
-
-    def isOpened(self) -> bool:      # noqa: N802
-        return self._opened
-
-    def getBackendName(self) -> str:  # noqa: N802
-        return "MJPEG-requests"
-
-    def set(self, *args, **kwargs):   # accepted for compat — no-op
-        return True
-
-    def read(self):
-        """
-        Read the next JPEG frame from the MJPEG stream.
-
-        Scans the raw byte stream for the JPEG SOI (\xff\xd8) and
-        EOI (\xff\xd9) markers and decodes the enclosed JPEG.
-
-        Returns:
-            (True, frame_bgr)  on success
-            (False, None)      on end-of-stream or error
-        """
-        if not self._opened or self._iter is None:
-            return False, None
-
-        try:
-            while True:
-                # Feed the buffer until we have a complete JPEG
-                try:
-                    chunk = next(self._iter)
-                    self._buf += chunk
-                except StopIteration:
-                    self._opened = False
-                    return False, None
-
-                # Safety cap — discard obviously corrupt data
-                if len(self._buf) > self._MAX_FRAME_BYTES:
-                    logger.warning(
-                        "[MJPEGCapture] Buffer exceeded %d B — discarding",
-                        self._MAX_FRAME_BYTES,
-                    )
-                    self._buf = b""
-                    continue
-
-                # Look for JPEG SOI + EOI pair
-                start = self._buf.find(b"\xff\xd8")
-                if start == -1:
-                    # No JPEG start yet — discard leading garbage
-                    self._buf = b""
-                    continue
-
-                end = self._buf.find(b"\xff\xd9", start + 2)
-                if end == -1:
-                    # Incomplete JPEG — keep buffering
-                    continue
-
-                # Extract exactly one JPEG
-                jpeg_bytes = self._buf[start : end + 2]
-                self._buf   = self._buf[end + 2:]    # keep remainder
-
-                jpg_array = np.frombuffer(jpeg_bytes, dtype=np.uint8)
-                frame     = cv2.imdecode(jpg_array, cv2.IMREAD_COLOR)
-                if frame is not None:
-                    return True, frame
-                # Corrupt JPEG — try next
-
-        except Exception as exc:
-            logger.warning("[MJPEGCapture] read() error: %s", exc)
-            self._opened = False
-            return False, None
-
-    def release(self) -> None:
-        self._opened = False
-        self._iter   = None
-        self._buf    = b""
-        if self._response is not None:
-            try:
-                self._response.close()
-            except Exception:
-                pass
-            self._response = None
-        logger.debug("[MJPEGCapture] Released %s", self._url)
+# MJPEGCapture lives in apps/cameras/mjpeg_capture.py (shared with stream_manager).
+from apps.cameras.mjpeg_capture import MJPEGCapture
 
 
 class ContinuousMonitor:
@@ -195,7 +53,6 @@ class ContinuousMonitor:
         self.is_running = False
         self.thread = None
         self.capture_thread = None
-        self.cap = None
         self.latest_frame = None
 
         # Stats
@@ -236,14 +93,14 @@ class ContinuousMonitor:
         return True
     
     def stop(self):
-        """Stop continuous monitoring"""
+        """Stop continuous monitoring."""
         self.is_running = False
         if self.capture_thread:
             self.capture_thread.join(timeout=5.0)
         if self.thread:
             self.thread.join(timeout=5.0)
-        if self.cap:
-            self.cap.release()
+        # NOTE: do NOT stop the stream_manager stream here — other components
+        # (e.g. the MJPEG feed view) may still be reading from it.
         logger.info(f"🛑 Stopped monitoring for camera {self.camera_id}")
     
     def get_stats(self) -> Dict:
@@ -356,122 +213,74 @@ class ContinuousMonitor:
             )
             return None
 
+
     def _capture_loop(self):
         """
-        Dedicated thread that reads frames at the camera's native FPS.
+        Dedicated thread that supplies frames to the AI monitor loop.
 
-        • Uses the URL AS-IS from the database — no mutation.
-        • Detects protocol (RTSP vs HTTP) from the URL scheme.
-        • Applies exponential back-off on reconnect (2→30s).
-        • Releases the old VideoCapture before opening a new one.
-        • isOpened() is always checked before getBackendName().
+        Reads frames from the shared CameraStreamManager instead of opening
+        its own connection to the camera source.  This guarantees:
+
+          • Only ONE TCP connection is ever made to each camera.
+          • DroidCam’s single-concurrent-client limit is never exceeded.
+          • Connection management (reconnect, backoff) is owned by
+            CameraStreamManager, not duplicated here.
+
+        Polls stream.get_frame_snapshot() which returns (frame, timestamp)
+        atomically.  A new frame is only processed when its timestamp
+        advances past the last-seen value, preventing duplicate inference.
         """
-        url = self.rtsp_url   # raw DB value, never modified
-        reconnect_attempt = 0
+        from apps.cameras.stream_manager import stream_manager
 
-        # ── Initial connection ────────────────────────────────────────────
-        self.cap = self._open_capture_for_url(url)
-        if self.cap is None:
-            logger.error(
-                "[ContinuousMonitor] Initial open failed for camera %s — "
-                "entering reconnect loop",
-                self.camera_id,
-            )
-            reconnect_attempt = 1   # start back-off from attempt 1
+        logger.info(
+            "[ContinuousMonitor] Attaching to shared CameraStreamManager "
+            "for camera %s: %s",
+            self.camera_id, self.rtsp_url,
+        )
+        stream = stream_manager.get_or_create(self.camera_id, self.rtsp_url)
+        last_frame_ts: float = 0.0
 
         while self.is_running:
             try:
-                # ── Guard: reconnect if cap is None (failed open or read error) ──
-                if self.cap is None:
-                    delay = min(2.0 ** reconnect_attempt, 30.0)
-                    self._reconnect_count += 1
-                    logger.warning(
-                        "[ContinuousMonitor] Reconnect #%d for camera %s in %.1fs "
-                        "(backoff attempt %d)",
-                        self._reconnect_count, self.camera_id,
-                        delay, reconnect_attempt,
-                    )
-                    time.sleep(delay)
-                    self.cap = self._open_capture_for_url(url)
-                    if self.cap is None:
-                        reconnect_attempt += 1
-                    else:
-                        reconnect_attempt = 0   # reset on success
-                        self.error_count = 0
-                    continue
+                frame, ts = stream.get_frame_snapshot()
 
-                ret, raw_frame = self.cap.read()
-
-                if not ret or raw_frame is None or getattr(raw_frame, "size", 0) == 0:
-                    # ── TASK 4: stale-frame / read-failure logging ────────────
+                if frame is None or ts == 0.0:
+                    # Stream not yet connected
                     self.error_count += 1
-                    now = time.time()
-                    stale_gap = now - self._last_capture_time if self._last_capture_time else 0.0
-                    if stale_gap > 1.0:
+                    if self.error_count % 30 == 1:
                         logger.warning(
-                            f"⚠️  Stale frame detected for camera {self.camera_id}: "
-                            f"no new frame for {stale_gap:.2f}s "
-                            f"(error_count={self.error_count})"
+                            "[ContinuousMonitor] No frame from stream_manager "
+                            "for camera %s (error_count=%d) — stream connecting?",
+                            self.camera_id, self.error_count,
                         )
-                    else:
-                        logger.warning(
-                            f"Failed to read frame from camera {self.camera_id} "
-                            f"(error_count={self.error_count})"
-                        )
-
-                    # Reconnect after too many consecutive errors
-                    if self.error_count > 10:
-                        self._reconnect_count += 1
-                        delay = min(2.0 ** reconnect_attempt, 30.0)
-                        logger.info(
-                            "[ContinuousMonitor] Triggering reconnect #%d for camera %s "
-                            "(after %d read errors) — waiting %.1fs",
-                            self._reconnect_count, self.camera_id,
-                            self.error_count, delay,
-                        )
-                        # ── Release OLD capture BEFORE creating new one ───────
-                        if self.cap is not None:
-                            self.cap.release()
-                            self.cap = None
-                        self.error_count = 0
-                        reconnect_attempt += 1
-                        # Back-off sleep happens at top of loop via the None guard
-
-
                     time.sleep(0.1)
                     continue
 
-                # ── TASK 3: Always replace latest_frame with the newest grab ──
-                # The monitor loop reads self.latest_frame directly, so old
-                # frames are automatically discarded — no queue accumulation.
+                if ts <= last_frame_ts:
+                    # Same frame as last poll — wait briefly for next capture
+                    time.sleep(0.01)
+                    continue
 
-                # Downscale instantly. 640x480 is plenty for X3D inference and Cloudinary clips.
-                # This reduces memory from 6.2MB per frame to 0.9MB.
-                frame = cv2.resize(raw_frame, (640, 480))
-
-                # Explicitly delete the raw 1080p array to free memory
-                del raw_frame
-
-                # Reset error count on success
+                # New frame arrived
+                last_frame_ts = ts
                 self.error_count = 0
                 self.frames_captured += 1
 
-                # ── TASK 4: per-frame latency / FPS diagnostics ───────────────
+                # stream_manager already downscales to 640×480 in its reader loop
+                # so no additional resize is needed here.
+
+                # ── TASK 4: per-frame latency / FPS diagnostics ────────────────
                 now = time.time()
                 if self._last_capture_time:
                     gap = now - self._last_capture_time
                     self._capture_fps_window.append(gap)
-
-                    # Warn if gap between consecutive frames exceeds 1 second
                     if gap > 1.0:
                         logger.warning(
-                            f"⚠️  Capture delay {gap:.2f}s exceeds 1 s threshold "
-                            f"for camera {self.camera_id}"
+                            f"⚠️  Capture delay {gap:.2f}s exceeds 1s for camera "
+                            f"{self.camera_id}"
                         )
-
                 self._last_capture_time = now
 
-                # Log rolling capture FPS every 10 seconds
                 if now - self._last_fps_log_time >= 10.0:
                     if self._capture_fps_window:
                         avg_gap = sum(self._capture_fps_window) / len(self._capture_fps_window)
@@ -485,9 +294,9 @@ class ContinuousMonitor:
                         )
                     self._last_fps_log_time = now
 
-                # ── TASK 3: overwrite latest_frame (no queue) ─────────────────
-                self.latest_frame = frame.copy()
-                self._frame_buffer.append(self.latest_frame)  # rolling alert clip buffer
+                # Update shared latest frame for the monitor loop
+                self.latest_frame = frame
+                self._frame_buffer.append(frame)
 
             except Exception as e:
                 logger.error(f"Error in capture loop: {str(e)}", exc_info=True)

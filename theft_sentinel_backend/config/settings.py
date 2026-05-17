@@ -13,8 +13,7 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 
 # ── New AI pipeline (Updated_AI_Engine, copied into ai_pipeline/) ────────────
 AI_PIPELINE_DIR          = BASE_DIR / "ai_pipeline"
-AI_PIPELINE_YOLO_WEIGHTS = AI_PIPELINE_DIR / "yolov8m.pt"
-AI_PIPELINE_X3D_WEIGHTS  = AI_PIPELINE_DIR / "x3d_theft_model.pth"
+
 
 # SECURITY WARNING: keep the secret key used in production secret!
 SECRET_KEY = config('SECRET_KEY', default='django-insecure-theft-sentinel-dev-key-change-in-production')

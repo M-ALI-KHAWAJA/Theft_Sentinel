@@ -39,10 +39,12 @@ import threading
 import time
 import logging
 import os
-from typing import Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
 
 import numpy as np
+
+from .mjpeg_capture import MJPEGCapture
 
 logger = logging.getLogger(__name__)
 
@@ -170,6 +172,19 @@ class CameraStream:
         with self._lock:
             return self._latest_frame.copy() if self._latest_frame is not None else None
 
+    def get_frame_snapshot(self) -> Tuple[Optional[np.ndarray], float]:
+        """
+        Return (frame_copy, timestamp) atomically.
+
+        Used by ContinuousMonitor to detect new frames without opening a
+        second connection to the camera source.  Returns (None, 0.0) if no
+        frame has been captured yet.
+        """
+        with self._lock:
+            if self._latest_frame is None:
+                return None, 0.0
+            return self._latest_frame.copy(), self._frame_timestamp
+
     def get_latest_frame_age(self) -> float:
         """How many seconds ago the latest frame was captured (∞ if none)."""
         with self._lock:
@@ -233,8 +248,13 @@ class CameraStream:
                 "[CameraStream] Opening HTTP stream for camera %s → %s",
                 self.camera_id, url,
             )
-            # Plain open — no CAP_FFMPEG so RTSP env-var options are not applied
-            cap = cv2.VideoCapture(url)
+            # Use MJPEGCapture instead of cv2.VideoCapture for HTTP streams.
+            # DroidCam requires User-Agent: DroidCam/1.0 (sent by MJPEGCapture).
+            # cv2.VideoCapture cannot set custom headers and receives DroidCam's
+            # HTML web-player page instead of the MJPEG stream.
+            # MJPEGCapture exposes the same read()/release()/isOpened() interface
+            # so the rest of _reader_loop works unchanged.
+            cap = MJPEGCapture(url)
 
         else:
             logger.error(

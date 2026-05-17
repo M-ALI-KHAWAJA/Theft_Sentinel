@@ -115,20 +115,9 @@ class AIService:
 
         self.device: str = "cpu"
 
-        # ── model paths from Django settings (with safe fallbacks) ────────
-        try:
-            from django.conf import settings
-            self._yolo_weights = str(
-                getattr(settings, "AI_PIPELINE_YOLO_WEIGHTS",
-                        _AI_PIPELINE_DIR / "yolov8m.pt")
-            )
-            self._x3d_weights = str(
-                getattr(settings, "AI_PIPELINE_X3D_WEIGHTS",
-                        _AI_PIPELINE_DIR / "best_model.pth")
-            )
-        except Exception:
-            self._yolo_weights = str(_AI_PIPELINE_DIR / "yolov8m.pt")
-            self._x3d_weights  = str(_AI_PIPELINE_DIR / "best_model.pth")
+        # ── model paths from ai_pipeline config (single source of truth) ──
+        self._yolo_weights = Config.YOLO_MODEL
+        self._x3d_weights  = Config.X3D_CHECKPOINT
 
         AIService._initialized = True
 
