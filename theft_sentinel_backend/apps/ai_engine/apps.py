@@ -34,12 +34,21 @@ import os
 #     "stimeout;5000000"
 # )
 
-os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ( 
-    "rtsp_transport;tcp|" 
-    "buffer_size;1024000|" 
+# os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = ( 
+#     "rtsp_transport;tcp|" 
+#     "buffer_size;1024000|" 
+#     "max_delay;500000|"
+#     "reorder_queue_size;32|" 
+#     "stimeout;5000000" 
+# )
+os.environ["OPENCV_FFMPEG_CAPTURE_OPTIONS"] = (
+    "rtsp_transport;tcp|"
+    "buffer_size;1024000|"
     "max_delay;500000|"
-    "reorder_queue_size;32|" 
-    "stimeout;5000000" 
+    "reorder_queue_size;32|"
+    "stimeout;5000000|"
+    "fflags;nobuffer|"
+    "flags;low_delay"
 )
 
 # Enables OpenCV's own backend-selection debug log (prints to stderr)

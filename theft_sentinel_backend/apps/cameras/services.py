@@ -60,7 +60,7 @@ def _test_http_feed(stream_url: str, timeout_s: float) -> bool:
         # Only append /video if the URL has no path segment beyond the port
         parsed = urlparse(stream_url)
         if not parsed.path or parsed.path == "/":
-            candidates.append(stream_url.rstrip("/") + "/video")
+            candidates.append(stream_url.rstrip("/"))
 
         for url in candidates:
             try:
