@@ -118,6 +118,16 @@ class TrackingService:
             for k in expired:
                 del cls._last_saved[k]
 
+    @classmethod
+    def cleanup_camera_cache(cls, camera_id: str) -> int:
+        """Remove in-memory throttle entries for one camera."""
+        camera_id = str(camera_id)
+        with cls._lock:
+            expired = [k for k in cls._last_saved if str(k[1]) == camera_id]
+            for k in expired:
+                del cls._last_saved[k]
+        return len(expired)
+
     # ── query helpers (used by views) ─────────────────────────────────────────
 
     @staticmethod

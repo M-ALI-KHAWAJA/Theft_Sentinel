@@ -4,7 +4,16 @@ import axiosInstance from '../../api/axios';
 import { ArrowLeftIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
-import { validateEmail, validateUsername, validatePassword, validatePasswordMatch, trimInput, PASSWORD_EXAMPLE } from '../../utils/validation';
+import {
+  normalizeCNIC,
+  validateCNIC,
+  validateEmail,
+  validateUsername,
+  validatePassword,
+  validatePasswordMatch,
+  trimInput,
+  PASSWORD_EXAMPLE,
+} from '../../utils/validation';
 
 const Create = () => {
   const navigate = useNavigate();
@@ -12,6 +21,7 @@ const Create = () => {
   const [formData, setFormData] = useState({
     username: '',
     email: '',
+    cnic: '',
     password: '',
     password2: '',
     role: 'SECURITY_GUARD',
@@ -19,12 +29,14 @@ const Create = () => {
   const [errors, setErrors] = useState({
     username: '',
     email: '',
+    cnic: '',
     password: '',
     password2: '',
   });
   const [touched, setTouched] = useState({
     username: false,
     email: false,
+    cnic: false,
     password: false,
     password2: false,
   });
@@ -60,6 +72,8 @@ const Create = () => {
       validation = validateUsername(value);
     } else if (name === 'email') {
       validation = validateEmail(value);
+    } else if (name === 'cnic') {
+      validation = validateCNIC(value);
     } else if (name === 'password') {
       validation = validatePassword(value);
     } else if (name === 'password2') {
@@ -76,6 +90,7 @@ const Create = () => {
     const newErrors = {
       username: '',
       email: '',
+      cnic: '',
       password: '',
       password2: '',
     };
@@ -88,6 +103,11 @@ const Create = () => {
     const emailValidation = validateEmail(formData.email);
     if (!emailValidation.valid) {
       newErrors.email = emailValidation.message;
+    }
+
+    const cnicValidation = validateCNIC(formData.cnic);
+    if (!cnicValidation.valid) {
+      newErrors.cnic = cnicValidation.message;
     }
 
     const passwordValidation = validatePassword(formData.password);
@@ -104,6 +124,7 @@ const Create = () => {
     setTouched({
       username: true,
       email: true,
+      cnic: true,
       password: true,
       password2: true,
     });
@@ -132,6 +153,7 @@ const Create = () => {
       const response = await axiosInstance.post('/api/auth/register/', {
         username: formData.username,
         email: formData.email,
+        cnic: normalizeCNIC(formData.cnic),
         password: formData.password,
         password2: formData.password2,
         role: formData.role,
@@ -144,6 +166,7 @@ const Create = () => {
       setFormData({
         username: '',
         email: '',
+        cnic: '',
         password: '',
         password2: '',
         role: 'SECURITY_GUARD',
@@ -169,6 +192,8 @@ const Create = () => {
           errorMsg = `Username: ${errorData.username[0]}`;
         } else if (errorData.email) {
           errorMsg = `Email: ${errorData.email[0]}`;
+        } else if (errorData.cnic) {
+          errorMsg = `CNIC: ${errorData.cnic[0]}`;
         } else if (errorData.password) {
           errorMsg = `Password: ${errorData.password[0]}`;
         } else if (errorData.detail) {
@@ -257,6 +282,30 @@ const Create = () => {
             </div>
 
             <div>
+              <label htmlFor="cnic" className="block text-sm font-medium text-dark-text-secondary">
+                CNIC *
+              </label>
+              <input
+                type="text"
+                id="cnic"
+                name="cnic"
+                required
+                value={formData.cnic}
+                onChange={handleChange}
+                onBlur={handleBlur}
+                className={`mt-1 block w-full px-3 py-2 bg-dark-card border rounded-md text-dark-text-primary placeholder-dark-text-muted focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent ${
+                  touched.cnic && errors.cnic
+                    ? 'border-status-error focus:border-status-error focus:ring-status-error'
+                    : 'border-dark-border'
+                }`}
+                placeholder="35202-1234567-1"
+              />
+              {touched.cnic && errors.cnic && (
+                <p className="mt-1 text-sm text-status-error">{errors.cnic}</p>
+              )}
+            </div>
+
+            <div>
               <label htmlFor="password" className="block text-sm font-medium text-dark-text-secondary">
                 Password *
               </label>
@@ -333,7 +382,7 @@ const Create = () => {
             </button>
             <button
               type="submit"
-              disabled={loading || Object.values(errors).some(error => error !== '') || !formData.username || !formData.email || !formData.password || !formData.password2}
+              disabled={loading || Object.values(errors).some(error => error !== '') || !formData.username || !formData.email || !formData.cnic || !formData.password || !formData.password2}
               className="px-6 py-2 bg-ai-blue text-white rounded-md hover:bg-ai-blueDark transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
             >
               {loading ? 'Creating...' : 'Create User'}

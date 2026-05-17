@@ -96,9 +96,20 @@ export const validateCNIC = (cnic) => {
 };
 
 export const normalizeCNIC = (cnic) => {
-  const digits = trimInput(cnic || '').replaceAll('-', '');
+  const digits = trimInput(cnic || '').replace(/[\s-]/g, '');
   if (digits.length !== 13) return trimInput(cnic || '');
   return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
+};
+
+export const hasDuplicateCNICs = (cnics = []) => {
+  const seen = new Set();
+  for (const cnic of cnics) {
+    const normalized = normalizeCNIC(cnic);
+    if (!normalized) continue;
+    if (seen.has(normalized)) return true;
+    seen.add(normalized);
+  }
+  return false;
 };
 
 export const validateName = (name) => {

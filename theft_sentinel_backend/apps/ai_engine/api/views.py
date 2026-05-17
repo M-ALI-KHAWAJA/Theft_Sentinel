@@ -39,6 +39,10 @@ from apps.ai_engine.utils.frame_utils import (
 )
 from apps.ai_engine.models import AIInference, DetectionTrack
 from apps.cameras.models import Camera
+from apps.cameras.services import (
+    CAMERA_FEED_UNAVAILABLE_MESSAGE,
+    turn_camera_on_after_feed_check,
+)
 
 # Import existing alert/incident logic (DO NOT MODIFY THEM)
 from apps.alerts.models import Alert
@@ -573,40 +577,33 @@ class StartContinuousMonitorView(views.APIView):
                 logger.info(f"Restarting monitor for camera {camera.id}")
                 monitor_manager.stop_monitor(str(camera.id))
                 time.sleep(1)  # Give it time to clean up
-            else:
-                # Already running, return success with current stats
-                return Response({
-                    'success': True,
-                    'message': 'Monitor already running',
-                    'already_running': True,
-                    'camera_id': str(camera.id),
-                    'camera_name': camera.name,
-                    'stats': existing_stats,
-                }, status=status.HTTP_200_OK)
         
-        # Start monitoring
-        success = monitor_manager.start_monitor(str(camera.id), camera.rtsp_url)
+        # Verify feed availability before allowing manual monitor start.
+        success, message, _ = turn_camera_on_after_feed_check(camera)
 
         if success:
-            # ── Persist to MongoDB so the toggle survives server restarts ──
-            camera.ai_monitoring_enabled = True
-            camera.save(update_fields=['ai_monitoring_enabled'])
+            camera.refresh_from_db()
 
             return Response({
                 'success': True,
-                'message': 'Started continuous monitoring',
-                'already_running': False,
+                'message': message,
+                'already_running': bool(existing_stats and existing_stats.get('is_running') and not restart),
                 'camera_id': str(camera.id),
                 'camera_name': camera.name,
-                'ai_monitoring_enabled': True,
+                'ai_monitoring_enabled': camera.ai_monitoring_enabled,
                 'rtsp_url_preview': camera.rtsp_url[:50] + '...' if len(camera.rtsp_url) > 50 else camera.rtsp_url,
             }, status=status.HTTP_200_OK)
         else:
+            response_status = (
+                status.HTTP_400_BAD_REQUEST
+                if message == CAMERA_FEED_UNAVAILABLE_MESSAGE
+                else status.HTTP_503_SERVICE_UNAVAILABLE
+            )
             return Response({
                 'success': False,
-                'error': 'Failed to start monitoring',
+                'error': message,
                 'camera_id': str(camera.id),
-            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
+            }, status=response_status)
 
 
 class StopContinuousMonitorView(views.APIView):

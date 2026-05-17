@@ -94,6 +94,7 @@ const List = () => {
   const columns = [
     { key: 'username', label: 'Username' },
     { key: 'email', label: 'Email' },
+    { key: 'cnic', label: 'CNIC', render: (row) => row.cnic || '-' },
     { 
       key: 'role', 
       label: 'Role',

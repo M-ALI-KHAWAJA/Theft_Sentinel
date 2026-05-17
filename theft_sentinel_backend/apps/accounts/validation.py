@@ -92,10 +92,8 @@ def normalize_pakistani_phone(value, required=True):
 
 def normalize_cnic(value):
     value = clean_text(value, "CNIC", 13, 15, CNIC_ERROR)
-    if not CNIC_PATTERN.match(value):
-        raise serializers.ValidationError(CNIC_ERROR)
-    digits = value.replace("-", "")
-    if len(digits) != 13:
+    digits = re.sub(r"[\s-]", "", value)
+    if not digits.isdigit() or len(digits) != 13:
         raise serializers.ValidationError(CNIC_ERROR)
     return f"{digits[:5]}-{digits[5:12]}-{digits[12]}"
 

@@ -154,6 +154,7 @@ class BranchRegistrationView(views.APIView):
                 username=data["username"],
                 email=data["email"],
                 password=data["password"],
+                cnic=data["cnic"],
                 role="ADMIN",
                 is_active=True,
                 branch=branch,
@@ -371,7 +372,10 @@ class SuperAdminProfileView(views.APIView):
     def put(self, request):
         profile = self._get_profile(request.user)
 
-        serializer = SuperAdminProfileUpdateSerializer(data=request.data)
+        serializer = SuperAdminProfileUpdateSerializer(
+            data=request.data,
+            context={"profile": profile},
+        )
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -434,7 +438,8 @@ class BranchAdminProfileView(views.APIView):
         if request.user.username == old_email:
             request.user.username = new_email
         request.user.email = new_email
-        request.user.save(update_fields=["email", "username"])
+        request.user.cnic = data["cnic"]
+        request.user.save(update_fields=["email", "username", "cnic"])
 
         branch.admin_name = data["full_name"]
         branch.admin_cnic = data["cnic"]

@@ -60,6 +60,17 @@ class Branch(models.Model):
     def __str__(self) -> str:
         return f"{self.tenant.company_name} — {self.branch_name}"
 
+    def save(self, *args, **kwargs):
+        if self.admin_cnic:
+            from apps.accounts.cnic import validate_cnic_available
+
+            exclude = {
+                "branches": [self.pk] if self.pk else [],
+                "branch_admin_user_branch_ids": [self.pk] if self.pk else [],
+            }
+            self.admin_cnic = validate_cnic_available(self.admin_cnic, exclude=exclude)
+        super().save(*args, **kwargs)
+
 
 class SuperAdminProfile(models.Model):
     id = ObjectIdAutoField(primary_key=True)
@@ -81,6 +92,28 @@ class SuperAdminProfile(models.Model):
 
     def __str__(self) -> str:
         return f"SuperAdminProfile({self.user.email})"
+
+    def save(self, *args, **kwargs):
+        if self.partners:
+            from apps.accounts.cnic import (
+                ensure_unique_in_payload,
+                normalize_cnic_value,
+                validate_cnic_available,
+            )
+
+            cnics = [partner.get("cnic") for partner in self.partners or []]
+            ensure_unique_in_payload(cnics)
+            normalized_partners = []
+            for partner in self.partners:
+                item = dict(partner)
+                item["cnic"] = normalize_cnic_value(item.get("cnic"))
+                validate_cnic_available(
+                    item["cnic"],
+                    exclude={"super_admin_profiles": [self.pk] if self.pk else []},
+                )
+                normalized_partners.append(item)
+            self.partners = normalized_partners
+        super().save(*args, **kwargs)
 
 
 class BranchPasswordResetRequest(models.Model):
