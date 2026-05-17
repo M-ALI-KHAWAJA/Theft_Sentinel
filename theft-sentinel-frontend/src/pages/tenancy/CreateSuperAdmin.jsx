@@ -5,6 +5,7 @@ import { useModal } from '../../hooks/useModal';
 import { createSuperAdmin, superAdminExists } from '../../api/tenancy';
 import {
   firstInvalid,
+  hasDuplicateCNICs,
   normalizeCNIC,
   normalizePakistaniPhone,
   scrollToFirstInvalid,
@@ -109,8 +110,11 @@ const CreateSuperAdmin = () => {
     checks.forEach(([field, check]) => {
       if (!check.valid) nextErrors[field] = check.message;
     });
+    if (hasDuplicateCNICs((formData.partner_cnics || []).slice(0, Number(formData.partners_count || 0)))) {
+      nextErrors.partner_cnics = 'This CNIC is already registered in the system.';
+    }
     setErrors(nextErrors);
-    return firstInvalid(checks.map(([, check]) => check)).valid;
+    return firstInvalid(checks.map(([, check]) => check)).valid && !nextErrors.partner_cnics;
   };
 
   const handleSubmit = async (e) => {
@@ -292,6 +296,7 @@ const CreateSuperAdmin = () => {
                   </div>
                 </div>
               ))}
+              {errors.partner_cnics && <p className="mt-1 text-sm text-status-error">{errors.partner_cnics}</p>}
             </div>
           )}
 

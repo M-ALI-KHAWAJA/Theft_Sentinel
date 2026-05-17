@@ -101,6 +101,13 @@ class SSERegistry:
     def has_subscribers(self, camera_id: str) -> bool:
         return self.subscriber_count(camera_id) > 0
 
+    def clear_camera(self, camera_id: str) -> int:
+        """Drop registry references for a camera that is no longer active."""
+        with self._lock:
+            queues = self._subscribers.pop(str(camera_id), [])
+        logger.debug("SSE: cleared camera=%s subscribers=%d", camera_id, len(queues))
+        return len(queues)
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

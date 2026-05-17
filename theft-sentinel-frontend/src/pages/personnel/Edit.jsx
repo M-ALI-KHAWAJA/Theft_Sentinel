@@ -4,7 +4,16 @@ import { getUser, updateUser, adminChangeUserPassword } from '../../api/auth';
 import { ArrowLeftIcon, KeyIcon } from '@heroicons/react/24/outline';
 import CenteredModal from '../../components/CenteredModal';
 import { useModal } from '../../hooks/useModal';
-import { validateEmail, validateUsername, validatePassword, validatePasswordMatch, trimInput, PASSWORD_EXAMPLE } from '../../utils/validation';
+import {
+  normalizeCNIC,
+  validateCNIC,
+  validateEmail,
+  validateUsername,
+  validatePassword,
+  validatePasswordMatch,
+  trimInput,
+  PASSWORD_EXAMPLE,
+} from '../../utils/validation';
 
 const Edit = () => {
   const navigate = useNavigate();
@@ -12,6 +21,7 @@ const Edit = () => {
   const [formData, setFormData] = useState({
     username: '',
     email: '',
+    cnic: '',
     role: 'SECURITY_GUARD',
     is_active: true,
   });
@@ -22,12 +32,14 @@ const Edit = () => {
   const [errors, setErrors] = useState({
     username: '',
     email: '',
+    cnic: '',
     new_password: '',
     confirm_password: '',
   });
   const [touched, setTouched] = useState({
     username: false,
     email: false,
+    cnic: false,
     new_password: false,
     confirm_password: false,
   });
@@ -47,6 +59,7 @@ const Edit = () => {
       setFormData({
         username: response.data.username,
         email: response.data.email,
+        cnic: response.data.cnic || '',
         role: response.data.role,
         is_active: response.data.is_active,
       });
@@ -88,6 +101,8 @@ const Edit = () => {
       validation = validateUsername(value);
     } else if (name === 'email') {
       validation = validateEmail(value);
+    } else if (name === 'cnic') {
+      validation = validateCNIC(value);
     }
 
     setErrors({
@@ -137,6 +152,7 @@ const Edit = () => {
     const newErrors = {
       username: '',
       email: '',
+      cnic: '',
     };
 
     const usernameValidation = validateUsername(formData.username);
@@ -149,8 +165,13 @@ const Edit = () => {
       newErrors.email = emailValidation.message;
     }
 
+    const cnicValidation = validateCNIC(formData.cnic);
+    if (!cnicValidation.valid) {
+      newErrors.cnic = cnicValidation.message;
+    }
+
     setErrors(prev => ({ ...prev, ...newErrors }));
-    setTouched(prev => ({ ...prev, username: true, email: true }));
+    setTouched(prev => ({ ...prev, username: true, email: true, cnic: true }));
 
     return Object.values(newErrors).every(error => error === '');
   };
@@ -172,7 +193,7 @@ const Edit = () => {
     setSubmitting(true);
 
     try {
-      await updateUser(id, formData);
+      await updateUser(id, { ...formData, cnic: normalizeCNIC(formData.cnic) });
       showSuccess('User updated successfully');
       // Navigate immediately and let the list page refresh
       navigate('/personnel', { replace: true });
@@ -187,6 +208,8 @@ const Edit = () => {
           errorMsg = errorData.role[0] || 'Admin role already exists. Only one Admin is allowed.';
         } else if (errorData.detail) {
           errorMsg = errorData.detail;
+        } else if (errorData.cnic) {
+          errorMsg = `CNIC: ${errorData.cnic[0]}`;
         } else if (errorData.error) {
           errorMsg = errorData.error;
         } else if (typeof errorData === 'string') {
@@ -325,6 +348,30 @@ const Edit = () => {
             </div>
 
             <div>
+              <label htmlFor="cnic" className="block text-sm font-medium text-dark-text-secondary">
+                CNIC *
+              </label>
+              <input
+                type="text"
+                id="cnic"
+                name="cnic"
+                required
+                value={formData.cnic || ''}
+                onChange={handleChange}
+                onBlur={handleBlur}
+                className={`mt-1 block w-full px-3 py-2 bg-dark-card border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent ${
+                  touched.cnic && errors.cnic
+                    ? 'border-status-error focus:border-status-error focus:ring-status-error'
+                    : 'border-dark-border'
+                }`}
+                placeholder="35202-1234567-1"
+              />
+              {touched.cnic && errors.cnic && (
+                <p className="mt-1 text-sm text-status-error">{errors.cnic}</p>
+              )}
+            </div>
+
+            <div>
               <label htmlFor="role" className="block text-sm font-medium text-dark-text-secondary">
                 Role *
               </label>
@@ -376,7 +423,7 @@ const Edit = () => {
               </button>
               <button
                 type="submit"
-                disabled={submitting || errors.username || errors.email || !formData.username || !formData.email}
+                disabled={submitting || errors.username || errors.email || errors.cnic || !formData.username || !formData.email || !formData.cnic}
                 className="px-6 py-2 bg-ai-blue text-white rounded-md hover:bg-ai-blueDark transition-colors disabled:opacity-50 disabled:cursor-not-allowed font-semibold"
               >
                 {submitting ? 'Updating...' : 'Update User'}

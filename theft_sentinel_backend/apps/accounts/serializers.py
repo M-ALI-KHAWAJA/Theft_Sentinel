@@ -12,6 +12,7 @@ from .validation import (
     normalize_username,
     validate_password_value,
 )
+from .cnic import validate_cnic_available
 
 User = get_user_model()
 
@@ -52,6 +53,7 @@ class UserSerializer(serializers.ModelSerializer):
             'id',
             'username',
             'email',
+            'cnic',
             'role',
             'branch_id',
             'branch_name',
@@ -101,6 +103,19 @@ class UserSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Email already exists.")
         return value
 
+    def validate_cnic(self, value):
+        exclude = {"users": [self.instance.pk] if self.instance is not None else []}
+        branch = getattr(self.instance, "branch", None) if self.instance is not None else None
+        if branch is not None and getattr(self.instance, "role", None) == "ADMIN":
+            exclude["branches"] = [branch.pk]
+        return validate_cnic_available(value, exclude=exclude)
+
+    def validate(self, attrs):
+        cnic = attrs.get("cnic", getattr(self.instance, "cnic", None))
+        if not cnic:
+            raise serializers.ValidationError({"cnic": ["CNIC is required."]})
+        return attrs
+
     def get_branch_id(self, obj):
         return str(obj.branch.id) if getattr(obj, "branch", None) else None
 
@@ -131,10 +146,11 @@ class UserCreateSerializer(serializers.ModelSerializer):
     """User creation serializer (Admin only)"""
     password = serializers.CharField(write_only=True, min_length=8)
     role = serializers.ChoiceField(choices=User.ROLE_CHOICES)
+    cnic = serializers.CharField(max_length=30)
     
     class Meta:
         model = User
-        fields = ['username', 'email', 'password', 'role', 'is_active']
+        fields = ['username', 'email', 'cnic', 'password', 'role', 'is_active']
     
     def validate_role(self, value):
         """Admin creation is branch-scoped; global uniqueness removed."""
@@ -148,6 +164,9 @@ class UserCreateSerializer(serializers.ModelSerializer):
         if User.objects.filter(email__iexact=value).exists():
             raise serializers.ValidationError("Email already exists.")
         return value
+
+    def validate_cnic(self, value):
+        return validate_cnic_available(value)
 
     def validate_password(self, value):
         validate_password_strength(value)

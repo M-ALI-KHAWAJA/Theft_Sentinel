@@ -1,11 +1,12 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listCameras, updateCameraStatus } from '../../api/cameras';
+import { deleteCamera, listCameras, updateCameraStatus } from '../../api/cameras';
 import { useRecoilValue } from 'recoil';
 import { isAuthenticatedState, authUserState } from '../../store/authStore';
 import { useNavigate } from 'react-router-dom';
 import CameraCardWithAI from '../../components/CameraCardWithAI';
 import FullScreenCameraModal from '../../components/FullScreenCameraModal';
 import LiveTrackingNodeGraph from '../../components/LiveTrackingNodeGraph';
+import ConfirmationModal from '../../components/ConfirmationModal';
 import { VideoCameraIcon, ArrowPathIcon, PlusIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
 
@@ -23,6 +24,8 @@ const ControlRoom = () => {
     zone: '',
   });
   const [fullScreenCamera, setFullScreenCamera] = useState(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState({ show: false, camera: null });
+  const [deletingCameraId, setDeletingCameraId] = useState(null);
   const isAuthenticated = useRecoilValue(isAuthenticatedState);
   const currentUser = useRecoilValue(authUserState);
   const navigate = useNavigate();
@@ -57,13 +60,13 @@ const ControlRoom = () => {
     fetchCameras();
   }, [fetchCameras]);
 
-  // Auto-refresh camera list every 30 seconds
+  // Auto-refresh camera list every 5 seconds so backend feed health changes show quickly.
   useEffect(() => {
     if (!isAuthenticated) return;
 
     const interval = setInterval(() => {
       fetchCameras();
-    }, 30000); // 30 seconds
+    }, 5000);
 
     return () => clearInterval(interval);
   }, [fetchCameras, isAuthenticated]);
@@ -81,7 +84,39 @@ const ControlRoom = () => {
   };
 
   const handleDelete = (camera) => {
-    navigate(`/cameras/control-room`, { state: { deleteId: camera.id } });
+    setDeleteConfirmation({ show: true, camera });
+  };
+
+  const handleDeleteConfirm = async () => {
+    const camera = deleteConfirmation.camera;
+    if (!camera || deletingCameraId) return;
+
+    setDeletingCameraId(camera.id);
+    setDeleteConfirmation({ show: false, camera: null });
+
+    try {
+      await deleteCamera(camera.id);
+      toast.success('Camera deleted successfully');
+      setCameras((prev) => prev.filter((item) => item.id !== camera.id));
+      if (fullScreenCamera?.id === camera.id) {
+        setFullScreenCamera(null);
+      }
+      fetchCameras();
+    } catch (error) {
+      const errorMsg =
+        error.response?.data?.detail ||
+        error.response?.data?.error ||
+        error.response?.data?.message ||
+        'Failed to delete camera';
+      toast.error(errorMsg);
+      fetchCameras();
+    } finally {
+      setDeletingCameraId(null);
+    }
+  };
+
+  const handleDeleteCancel = () => {
+    setDeleteConfirmation({ show: false, camera: null });
   };
 
   const handleStatusChange = async (camera, status) => {
@@ -274,6 +309,17 @@ const ControlRoom = () => {
         show={fullScreenCamera !== null}
         camera={fullScreenCamera}
         onClose={handleCloseFullScreen}
+      />
+
+      <ConfirmationModal
+        show={deleteConfirmation.show}
+        title="Delete Camera"
+        message={`Are you sure you want to delete "${deleteConfirmation.camera?.name}"? Active monitoring and live stream resources will be stopped.`}
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+        confirmText={deletingCameraId ? 'Deleting...' : 'Delete'}
+        cancelText="Cancel"
+        type="danger"
       />
     </div>
   );

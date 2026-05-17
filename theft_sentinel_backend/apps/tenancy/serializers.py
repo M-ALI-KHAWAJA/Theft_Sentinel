@@ -14,6 +14,10 @@ from apps.accounts.validation import (
     validate_name,
     validate_reason,
 )
+from apps.accounts.cnic import (
+    ensure_unique_in_payload,
+    validate_cnic_available,
+)
 from .models import Tenant, Branch, SuperAdminProfile, BranchPasswordResetRequest
 
 User = get_user_model()
@@ -101,6 +105,9 @@ class SuperAdminCreateSerializer(serializers.Serializer):
             )
         attrs["partner_names"] = [validate_name(name) for name in names]
         attrs["partner_cnics"] = [normalize_cnic(cnic) for cnic in cnics]
+        ensure_unique_in_payload(attrs["partner_cnics"])
+        for cnic in attrs["partner_cnics"]:
+            validate_cnic_available(cnic)
         return attrs
 
 
@@ -132,7 +139,7 @@ class TenantBranchRegistrationSerializer(serializers.Serializer):
         return validate_username_format(value)
 
     def validate_cnic(self, value):
-        return normalize_cnic(value)
+        return validate_cnic_available(normalize_cnic(value))
 
     def validate_email(self, value):
         value = normalize_email(value)
@@ -247,6 +254,11 @@ class SuperAdminProfileUpdateSerializer(serializers.Serializer):
                 raise serializers.ValidationError(errors)
             attrs["partner_names"] = [validate_name(name) for name in names]
             attrs["partner_cnics"] = [normalize_cnic(cnic) for cnic in cnics]
+            ensure_unique_in_payload(attrs["partner_cnics"])
+            profile = self.context.get("profile")
+            exclude = {"super_admin_profiles": [profile.pk]} if profile is not None else None
+            for cnic in attrs["partner_cnics"]:
+                validate_cnic_available(cnic, exclude=exclude)
         return attrs
 
 
@@ -280,7 +292,16 @@ class BranchAdminProfileUpdateSerializer(serializers.Serializer):
         return validate_name(value)
 
     def validate_cnic(self, value):
-        return normalize_cnic(value)
+        request = self.context.get("request")
+        branch = getattr(getattr(request, "user", None), "branch", None)
+        user = getattr(request, "user", None)
+        exclude = {}
+        if branch is not None:
+            exclude["branches"] = [branch.pk]
+            exclude["branch_admin_user_branch_ids"] = [branch.pk]
+        if user is not None and getattr(user, "pk", None):
+            exclude["users"] = [user.pk]
+        return validate_cnic_available(normalize_cnic(value), exclude=exclude)
 
     def validate_phone_number(self, value):
         return normalize_pakistani_phone(value, required=True)

@@ -19,6 +19,10 @@ class UserManager(BaseUserManager):
         
         username = str(username).strip()
         email = self.normalize_email(str(email).strip()).lower()
+        if extra_fields.get("cnic"):
+            from .cnic import normalize_cnic_value
+
+            extra_fields["cnic"] = normalize_cnic_value(extra_fields["cnic"])
 
         # Branch-scoped username uniqueness (global uniqueness removed for multi-tenancy).
         branch = extra_fields.get("branch", None)
@@ -59,6 +63,7 @@ class User(AbstractBaseUser, PermissionsMixin):
     # Legacy single-tenant rows may have branch=NULL; these remain valid.
     username = models.CharField(max_length=150, db_index=True)
     email = models.EmailField(max_length=255, unique=True, db_index=True)
+    cnic = models.CharField(max_length=30, blank=True, null=True, db_index=True)
     role = models.CharField(max_length=20, choices=ROLE_CHOICES, default='SECURITY_GUARD')
     branch = models.ForeignKey(
         "tenancy.Branch",
@@ -84,6 +89,16 @@ class User(AbstractBaseUser, PermissionsMixin):
     
     def __str__(self):
         return f"{self.username} ({self.role})"
+
+    def save(self, *args, **kwargs):
+        if self.cnic:
+            from .cnic import validate_cnic_available
+
+            exclude = {"users": [self.pk] if self.pk else []}
+            if self.role == "ADMIN" and self.branch_id:
+                exclude["branches"] = [self.branch_id]
+            self.cnic = validate_cnic_available(self.cnic, exclude=exclude)
+        super().save(*args, **kwargs)
     
     @property
     def is_super_admin(self):

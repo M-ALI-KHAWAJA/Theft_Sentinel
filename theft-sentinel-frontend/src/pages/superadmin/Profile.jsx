@@ -4,6 +4,7 @@ import { useModal } from '../../hooks/useModal';
 import { deleteSuperAdminAccount, getSuperAdminProfile, updateSuperAdminProfile } from '../../api/tenancy';
 import { changePassword } from '../../api/auth';
 import {
+  hasDuplicateCNICs,
   normalizeCNIC,
   normalizePakistaniPhone,
   validateCNIC,
@@ -120,6 +121,10 @@ const Profile = () => {
         showError(`Partner CNIC #${idx + 1}: ${partnerCnicCheck.message}`);
         return;
       }
+    }
+    if (hasDuplicateCNICs(payload.partner_cnics)) {
+      showError('This CNIC is already registered in the system.');
+      return;
     }
     payload.partner_cnics = payload.partner_cnics.map((cnic) => normalizeCNIC(cnic));
 

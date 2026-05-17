@@ -522,6 +522,14 @@ class CameraStreamManager:
         no_frame_warned = False
 
         while True:
+            if self.get_stream(camera_id) is not stream or not stream.is_alive():
+                logger.info(
+                    "[StreamManager] Ending MJPEG generator for camera %s "
+                    "(stream stopped)",
+                    camera_id,
+                )
+                break
+
             now = time.time()
 
             # Throttle to target FPS

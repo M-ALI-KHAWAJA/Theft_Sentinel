@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from .models import Camera
 from .serializers import CameraSerializer, CameraCreateSerializer, CameraStatusUpdateSerializer
+from .services import turn_camera_off, turn_camera_on_after_feed_check
 from apps.accounts.permissions import CanManageCameras, CanViewCameraFeeds
 
 
@@ -83,10 +84,17 @@ class CameraStatusUpdateView(views.APIView):
     Only Admin can update camera status
     """
     permission_classes = [IsAuthenticated, CanManageCameras]
+
+    def _get_camera(self, request, pk):
+        qs = Camera.objects.all()
+        user_branch = getattr(request.user, "branch", None)
+        if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+            qs = qs.filter(branch=user_branch)
+        return qs.get(pk=pk)
     
     def patch(self, request, pk):
         try:
-            camera = Camera.objects.get(pk=pk)
+            camera = self._get_camera(request, pk)
         except Camera.DoesNotExist:
             return Response(
                 {'error': 'Camera not found'},
@@ -95,8 +103,26 @@ class CameraStatusUpdateView(views.APIView):
         
         serializer = CameraStatusUpdateSerializer(data=request.data)
         if serializer.is_valid():
-            camera.status = serializer.validated_data['status']
-            camera.save()
+            desired_status = serializer.validated_data['status']
+
+            if desired_status == "ONLINE":
+                success, message, _ = turn_camera_on_after_feed_check(camera)
+                if not success:
+                    return Response(
+                        {'error': message},
+                        status=status.HTTP_400_BAD_REQUEST
+                        if "feed is not available" in message
+                        else status.HTTP_503_SERVICE_UNAVAILABLE,
+                    )
+            else:
+                success, message, _ = turn_camera_off(camera)
+                if not success:
+                    return Response(
+                        {'error': message},
+                        status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                    )
+
+            camera.refresh_from_db()
             return Response(CameraSerializer(camera).data, status=status.HTTP_200_OK)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
