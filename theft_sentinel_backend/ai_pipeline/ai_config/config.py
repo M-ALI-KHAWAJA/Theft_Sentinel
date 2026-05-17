@@ -52,7 +52,7 @@ class Config:
     # ──────────────────────────────────────────────
     # Tracking (DeepSORT)
     # ──────────────────────────────────────────────
-    DEEPSORT_MAX_AGE             = 90
+    DEEPSORT_MAX_AGE             = 50
     DEEPSORT_N_INIT              = 3
     DEEPSORT_MAX_IOU_DISTANCE    = 0.7
     DEEPSORT_MAX_COSINE_DISTANCE = 0.3
@@ -72,8 +72,8 @@ class Config:
     # Cross-Camera Matching — thresholds from Updated_AI_Engine_v2
     # (stricter same-cam 0.555, tighter cross-cam 0.70 reduce false merges)
     # ──────────────────────────────────────────────
-    MATCH_THRESHOLD_SAME_CAM = 0.555  # v2 exact — strict same-cam to prevent false merges
-    MATCH_THRESHOLD_DIFF_CAM = 0.70   # v2 exact — high bar for cross-camera identity merge
+    MATCH_THRESHOLD_SAME_CAM = 0.6  # v2 exact — strict same-cam to prevent false merges
+    MATCH_THRESHOLD_DIFF_CAM = 0.50   # v2 exact — high bar for cross-camera identity merge
     MATCH_TEMPORAL_WINDOW    = 30.0    # seconds
     MATCH_MIN_EMBEDDINGS     = 3
 
@@ -110,9 +110,9 @@ class Config:
     X3D_NORM_STD  = [0.225, 0.225, 0.225]
 
     # Detection state machine
-    X3D_SMOOTH_WINDOW         = 5     # rolling average over N inferences
-    X3D_THEFT_THRESH          = 0.70  # smoothed score threshold for suspicion
-    X3D_CONSECUTIVE_REQUIRED  = 3     # consecutive above-threshold to confirm theft
+    X3D_SMOOTH_WINDOW         = 3     # rolling average over N inferences
+    X3D_THEFT_THRESH          = 0.20  # smoothed score threshold for suspicion
+    X3D_CONSECUTIVE_REQUIRED  = 1     # consecutive above-threshold to confirm theft
     X3D_COOLDOWN_SECONDS      = 8.0   # seconds before a new alert can fire
     X3D_RESET_AFTER_ABSENT    = 150   # frames without person before state reset (~6 s at 25 fps)
 
