@@ -36,6 +36,7 @@ import threading
 import time
 from typing import Any, Dict, List, Optional
 
+import cv2
 import numpy as np
 import logging
 
@@ -153,7 +154,9 @@ class InferenceRunner:
         self._frame_idx += 1
 
         h, w      = frame_bgr.shape[:2]
-        frame_rgb = None   # RGB conversion deferred until needed for X3D
+        # FIX 4: always convert to RGB here so frame_rgb is never None.
+        # v2 converts unconditionally at the top of process_camera().
+        frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
 
 
         # ── 1. Detect persons (GPU — inference_lock) ──────────────────────
@@ -304,13 +307,15 @@ class InferenceRunner:
                 "det_conf":  det_conf,
             })
 
-        # ── 7. Push frames to GlobalTheftDetector (FIX 2 — dense fill) ────
-        # Convert BGR frame to RGB once, shared across all push_frame calls.
-        import cv2
-        if results:
-            frame_rgb = cv2.cvtColor(frame_bgr, cv2.COLOR_BGR2RGB)
-
+        # ── 7. Push frames to GlobalTheftDetector (FIX 2 + FIX 4 — dense fill) ────
+        # frame_rgb was converted unconditionally at the top of run_inference().
+        # Push for ALL DeepSORT-confirmed tracks with a known global_id, not
+        # just those with successful ReID this frame.  This keeps the 64-frame
+        # X3D buffer filling at camera FPS even when ReID temporarily fails.
         with ai_service.state_lock:
+            pushed_gids: set = set()
+
+            # Pass 1: tracks that completed full ReID pipeline this frame
             for res in results:
                 gid = res["global_id"]
                 if gid is None:
@@ -321,6 +326,30 @@ class InferenceRunner:
                     bbox        = res["yolo_bbox"],   # FIX 3: YOLO bbox
                     frame_shape = (h, w),
                 )
+                pushed_gids.add(gid)
+
+            # Pass 2: DeepSORT tracks with a known GID that were excluded from
+            # results this frame (crop/embedding failed).  Look up their GID
+            # from the DB and push the frame to keep the buffer dense.
+            result_track_ids = {res["track_id"] for res in results}
+            for t in tracks:
+                tid = str(t["track_id"])
+                if tid in result_track_ids:
+                    continue
+                existing_gid = ai_service.db.get_global_id_for_track(
+                    self._camera_id_str, tid
+                )
+                if existing_gid is not None and existing_gid not in pushed_gids:
+                    t_box   = [float(v) for v in t["bbox"]]
+                    matched = self._match_det_to_track(t_box, raw_dets)
+                    yolo_b  = matched["bbox"] if matched else t_box
+                    ai_service.theft_detector.push_frame(
+                        global_id   = existing_gid,
+                        frame_rgb   = frame_rgb,
+                        bbox        = yolo_b,
+                        frame_shape = (h, w),
+                    )
+                    pushed_gids.add(existing_gid)
 
         # ── 8. X3D inference via GlobalTheftDetector ──────────────────────
         # maybe_infer() checks should_infer() internally; no wasted GPU calls.
@@ -364,18 +393,18 @@ class InferenceRunner:
         )
 
         if any_theft_confirmed:
-            # Check if all high-scoring persons are ALREADY active thieves
-            all_known = True
+            # Any X3D-confirmed theft → classify as theft immediately.
+            # The monitor-level cooldown gate (continuous_monitor._allow_db_alert)
+            # ensures only ONE DB Alert is created per theft event.
+            # classification='theft' is kept on every cooldown frame so the
+            # SSE/frontend shows real-time THEFT overlays throughout.
+            classification = "theft"
             for res in results:
                 ts = res.get("theft_state")
                 if ts and (ts.is_theft or ts.in_cooldown):
                     gid = res["global_id"]
-                    if gid is None or not ai_service.is_active_thief(gid):
-                        all_known = False
-                        if gid is not None:
-                            ai_service.add_active_thief(gid)
-            if not all_known:
-                classification = "theft"
+                    if gid is not None and not ai_service.is_active_thief(gid):
+                        ai_service.add_active_thief(gid)
 
         # ── 10. Build suspicious_tracks ────────────────────────────────────
         suspicious_tracks = []

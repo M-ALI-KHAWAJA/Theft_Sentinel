@@ -72,10 +72,16 @@ class ContinuousMonitor:
         self.last_alert_time: float = 0.0
 
         # ── TASK 4: Latency debug tracking ────────────────────────────────────
-        self._last_capture_time: float = 0.0   # wall-clock when last frame arrived
-        self._reconnect_count: int = 0          # total reconnects since start
-        self._last_fps_log_time: float = 0.0   # throttle periodic FPS log
-        self._capture_fps_window: deque = deque(maxlen=30)  # recent inter-frame gaps
+        self._last_capture_time: float = 0.0
+        self._reconnect_count: int = 0
+        self._last_fps_log_time: float = 0.0
+        self._capture_fps_window: deque = deque(maxlen=30)
+
+        # High-FPS X3D buffer fill — updated by inference loop, read by capture loop.
+        # Maps global_id -> last known bbox so capture thread can push frames at
+        # camera FPS without waiting for the slow inference cycle.
+        self._tracked_gids: dict = {}          # gid -> [x1,y1,x2,y2]
+        self._tracked_gids_lock = threading.Lock()
     
     def start(self):
         """Start continuous monitoring in background thread"""
@@ -298,6 +304,31 @@ class ContinuousMonitor:
                 self.latest_frame = frame
                 self._frame_buffer.append(frame)
 
+                # ── HIGH-FPS X3D BUFFER FILL ──────────────────────────────────
+                # Push this captured frame to the X3D buffer for every GID that
+                # the inference loop is currently tracking.  This fills the
+                # 64-frame buffer at camera FPS (~15 FPS) instead of inference
+                # FPS (~3 FPS), reducing first-inference latency from ~21s to ~4s.
+                with self._tracked_gids_lock:
+                    _gids_snap = dict(self._tracked_gids)
+
+                if _gids_snap:
+                    try:
+                        from apps.ai_engine.services.ai_service import ai_service
+                        if ai_service.is_ready():
+                            _fh, _fw = frame.shape[:2]
+                            _frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+                            with ai_service.state_lock:
+                                for _gid, _bbox in _gids_snap.items():
+                                    ai_service.theft_detector.push_frame(
+                                        global_id   = _gid,
+                                        frame_rgb   = _frame_rgb,
+                                        bbox        = _bbox,
+                                        frame_shape = (_fh, _fw),
+                                    )
+                    except Exception as _x3d_err:
+                        logger.debug("Capture-loop X3D push error: %s", _x3d_err)
+
             except Exception as e:
                 logger.error(f"Error in capture loop: {str(e)}", exc_info=True)
                 self.error_count += 1
@@ -355,6 +386,14 @@ class ContinuousMonitor:
                 # Run AI inference
                 result = runner.run_inference(frame, camera_id=self.camera_id)
 
+                # Update GID-bbox map so capture loop can push at camera FPS
+                with self._tracked_gids_lock:
+                    self._tracked_gids = {
+                        t["global_id"]: t["bbox"]
+                        for t in result.get("tracks", [])
+                        if t.get("global_id") is not None
+                    }
+
                 # Task 3: Aggressive CUDA Cache Flushing (balanced for FPS)
                 if self.frames_processed % 15 == 0 or result.get('classification') == 'theft':
                     import torch
@@ -385,28 +424,28 @@ class ContinuousMonitor:
                 result['frame_width'] = frame.shape[1]
                 result['frame_height'] = frame.shape[0]
 
-                # ── COOLDOWN GATEKEEPER ──────────────────────────────────────
+                # ── COOLDOWN GATEKEEPER — gates DB alert only ─────────────────
+                # The X3D TheftState already has an 8-second built-in cooldown.
+                # This outer gate prevents duplicate DB Alert records across
+                # consecutive theft-classified frames.
+                #
+                # IMPORTANT: result['classification'] is NOT overwritten here.
+                # The SSE callback always receives the true AI output so the
+                # frontend canvas shows real-time THEFT overlays.
+                # Duplicate-alert suppression is handled by _allow_db_alert below.
                 is_theft_detected = result.get('classification') == 'theft'
                 current_time = time.time()
-                
-                if is_theft_detected and (current_time - self.last_alert_time) >= 5.0:
+
+                _allow_db_alert = (
+                    is_theft_detected
+                    and (current_time - self.last_alert_time) >= 15.0  # > X3D_COOLDOWN_SECONDS (8s)
+                )
+                if _allow_db_alert:
                     self.last_alert_time = current_time
-                    # Proceed: Save DB Alert, Trigger VideoWriter, set is_suspicious=True
-                else:
-                    # COOLDOWN ACTIVE (or normal frame)
-                    # Force normal state for the JSON payload so no alert is created
-                    is_theft_detected = False
-                    result['classification'] = 'normal'
-                    if 'alert_triggered' in result:
-                        result['alert_triggered'] = False
-                    
-                    # We NO LONGER clear `suspicious_tracks` or `is_suspicious` here,
-                    # so the frontend Node Graph and camera overlays still receive them
-                    # and draw the bounding boxes consistently via Cross-Camera Broadcast.
 
                 self.last_result = result
 
-                # ── CALLBACK FIRST ────────────────────────────────────────────
+                # ── CALLBACK FIRST (true AI classification — no suppression) ──
                 # Fire the SSE/WebSocket callback immediately after inference so
                 # the frontend canvas receives bounding-box data without waiting
                 # for the (slower) database write to complete.
@@ -422,15 +461,24 @@ class ContinuousMonitor:
                             logger.error("Callback raised an error: %s", cb_err)
 
                 # ── DB WRITE (after callback — latency non-critical) ──────────
-                # Save to database every 2 seconds (or immediately on theft)
+                # Save inference record every ~2 seconds.
+                # Save theft alert immediately, but only when _allow_db_alert
+                # is True (5-second dedup gate) to avoid duplicate Alert records.
                 current_fps = max(1, int(self.get_stats()['fps']))
                 should_save = (
-                    self.frames_processed % (current_fps * 2) == 0 or  # Every ~2 seconds
-                    result['classification'] == 'theft'
+                    self.frames_processed % (current_fps * 2) == 0
+                    or _allow_db_alert
                 )
                 
                 if should_save:
-                    self._save_result(result)
+                    if is_theft_detected and not _allow_db_alert:
+                        # Cooldown active: save as "normal" inference record —
+                        # no duplicate Alert row, but the inference data is kept.
+                        _save_r = dict(result)
+                        _save_r['classification'] = 'normal'
+                        self._save_result(_save_r)
+                    else:
+                        self._save_result(result)
                 
                 # Persist tracking records (service handles its own throttle)
                 if result.get('tracks'):

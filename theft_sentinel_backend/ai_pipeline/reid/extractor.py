@@ -104,8 +104,8 @@ class ReIDExtractor:
         """
         h, w = frame.shape[:2]
         x1, y1, x2, y2 = bbox
-        x1 = max(0, int(x1));  y1 = max(0, int(y1))
-        x2 = min(w, int(x2));  y2 = min(h, int(y2))
+        x1 = max(0, x1);  y1 = max(0, y1)
+        x2 = min(w, x2);  y2 = min(h, y2)
 
         if (x2 - x1) < 20 or (y2 - y1) < 40:
             return None

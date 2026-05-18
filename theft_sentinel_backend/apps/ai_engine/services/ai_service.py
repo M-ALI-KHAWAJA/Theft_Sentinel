@@ -110,7 +110,7 @@ class AIService:
         self.x3d_frame_counters: Dict[int, int] = {}
 
         # ── thread-safety locks ───────────────────────────────────────────
-        self.inference_lock = threading.Lock()   # GPU forward passes
+        self.inference_lock = threading.RLock()  # GPU forward passes (RLock: re-entrant so YOLO + X3D can both acquire in same thread)
         self.state_lock     = threading.Lock()   # FAISS / theft_detector / counters
 
         self.device: str = "cpu"

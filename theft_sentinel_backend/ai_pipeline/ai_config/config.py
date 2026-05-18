@@ -41,9 +41,9 @@ class Config:
 
     # ──────────────────────────────────────────────
     # Detection (YOLOv8)
-    # Updated_AI_Engine_v2: conf=0.35 (better theft recall), model=yolov8m.pt
+    # Updated_AI_Engine_v2: conf=0.35 (better theft recall), model=yolov8n.pt
     # ──────────────────────────────────────────────
-    YOLO_MODEL           = os.path.join(_BASE, "yolov8m.pt")
+    YOLO_MODEL           = os.path.join(_BASE, "yolov8n.pt")
     YOLO_CONFIDENCE      = 0.35   # 0.35 from Updated_AI_Engine (better recall for theft)
     YOLO_IOU_THRESHOLD   = 0.5
     YOLO_PERSON_CLASS_ID = 0
@@ -111,7 +111,7 @@ class Config:
 
     # Detection state machine
     X3D_SMOOTH_WINDOW         = 3     # rolling average over N inferences
-    X3D_THEFT_THRESH          = 0.20  # smoothed score threshold for suspicion
+    X3D_THEFT_THRESH          = 0.380  # smoothed score threshold for suspicion (v2 calibrated)
     X3D_CONSECUTIVE_REQUIRED  = 1     # consecutive above-threshold to confirm theft
     X3D_COOLDOWN_SECONDS      = 8.0   # seconds before a new alert can fire
     X3D_RESET_AFTER_ABSENT    = 150   # frames without person before state reset (~6 s at 25 fps)
@@ -121,7 +121,7 @@ class Config:
     #  X3D_THEFT_THRESHOLD / X3D_SUSPICIOUS_THRESHOLD)
     X3D_INFERENCE_EVERY      = X3D_INFER_INTERVAL       # = 16
     X3D_CLIP_FRAMES          = X3D_CLIP_LENGTH           # = 64
-    X3D_THEFT_THRESHOLD      = X3D_THEFT_THRESH          # = 0.70
+    X3D_THEFT_THRESHOLD      = X3D_THEFT_THRESH          # = 0.380
     X3D_SUSPICIOUS_THRESHOLD = 0.50  # score range [0.50, 0.70) → "suspicious" label
 
     # Old path alias (still referenced by ai_service.py on initial load)

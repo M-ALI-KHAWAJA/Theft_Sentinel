@@ -27,9 +27,10 @@ class Config:
     # Add your sources: file paths, RTSP/HTTP URLs, or integer device indices.
     CAMERA_SOURCES = [
         # ── Live / network cameras ──
-        # "http://10.221.87.107:8080/video",      # phone cam (New_MCMT style)
+        "http://192.168.10.28:8080/video",      # phone cam (New_MCMT style)
+        "http://192.168.10.28:8080/video",      # phone cam (New_MCMT style)
         # "rtsp://user:pass@192.168.1.100/stream1",
-        0,                                       # USB webcam
+        # 0,                                       # USB webcam
 
         # ── Pre-recorded theft test clips ──
         # "test_videos/theft/A001_04271805_F781_fast_flip.mp4",
@@ -78,8 +79,8 @@ class Config:
     # Cross-Camera Matching — thresholds from New_MCMT
     # (stricter same-cam 0.6, tighter cross-cam 0.7 reduce false merges)
     # ──────────────────────────────────────────────
-    MATCH_THRESHOLD_SAME_CAM = 0.555   # New_MCMT value
-    MATCH_THRESHOLD_DIFF_CAM = 0.70   # New_MCMT value
+    MATCH_THRESHOLD_SAME_CAM = 0.6   # New_MCMT value
+    MATCH_THRESHOLD_DIFF_CAM = 0.50   # New_MCMT value
     MATCH_TEMPORAL_WINDOW    = 30.0   # seconds
     MATCH_MIN_EMBEDDINGS     = 3
 
@@ -116,9 +117,9 @@ class Config:
     X3D_NORM_STD  = [0.225, 0.225, 0.225]
 
     # Detection state machine
-    X3D_SMOOTH_WINDOW         = 5     # rolling average over N inferences
-    X3D_THEFT_THRESH          = 0.70  # smoothed score threshold for suspicion
-    X3D_CONSECUTIVE_REQUIRED  = 3     # consecutive above-threshold to confirm
+    X3D_SMOOTH_WINDOW         = 3     # rolling average over N inferences
+    X3D_THEFT_THRESH          = 0.380  # smoothed score threshold for suspicion
+    X3D_CONSECUTIVE_REQUIRED  = 1     # consecutive above-threshold to confirm
     X3D_COOLDOWN_SECONDS      = 8.0   # seconds before a new alert can fire
     X3D_RESET_AFTER_ABSENT    = 150   # frames without person before state reset (~6 s at 25 fps)
 
