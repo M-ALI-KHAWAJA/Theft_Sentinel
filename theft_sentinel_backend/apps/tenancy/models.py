@@ -83,6 +83,26 @@ class SuperAdminProfile(models.Model):
         return f"SuperAdminProfile({self.user.email})"
 
 
+class CnicRegistry(models.Model):
+    """Global CNIC uniqueness registry for every CNIC-bearing entity."""
+
+    id = ObjectIdAutoField(primary_key=True)
+    cnic = models.CharField(max_length=13, unique=True, db_index=True)
+    owner_type = models.CharField(max_length=100, db_index=True)
+    owner_id = models.CharField(max_length=100, db_index=True)
+    created_at = models.DateTimeField(default=timezone.now, db_index=True)
+
+    class Meta:
+        db_table = "cnic_registry"
+        ordering = ["-created_at"]
+        indexes = [
+            models.Index(fields=["owner_type", "owner_id"], name="cnic_reg_owner_idx"),
+        ]
+
+    def __str__(self) -> str:
+        return f"{self.cnic} -> {self.owner_type}:{self.owner_id}"
+
+
 class BranchPasswordResetRequest(models.Model):
     STATUS_PENDING = "PENDING"
     STATUS_APPROVED = "APPROVED"

@@ -21,7 +21,6 @@ const Create = () => {
     rtsp_url: '',
     location: '',
     zone: '',
-    status: 'ONLINE', // CORRECTED: Must be ONLINE or OFFLINE
   });
   const [loading, setLoading] = useState(false);
   const [errors, setErrors] = useState({});
@@ -60,7 +59,7 @@ const Create = () => {
     try {
       console.log('📤 [CreateCamera] Sending camera data:', formData);
       const payload = Object.fromEntries(
-        Object.entries(formData).map(([key, value]) => [key, key === 'status' ? value : trimInput(value)])
+        Object.entries(formData).map(([key, value]) => [key, trimInput(value)])
       );
       const response = await createCamera(payload);
       console.log('✅ [CreateCamera] Camera created successfully:', response.data);
@@ -192,21 +191,6 @@ const Create = () => {
               />
             </div>
 
-            <div>
-              <label htmlFor="status" className="block text-sm font-medium text-dark-text-secondary">
-                Status *
-              </label>
-              <select
-                id="status"
-                name="status"
-                value={formData.status}
-                onChange={handleChange}
-                className="mt-1 block w-full px-3 py-2 bg-dark-card border border-dark-border rounded-md text-dark-text-primary focus:outline-none focus:ring-2 focus:ring-ai-blue focus:border-transparent"
-              >
-                <option value="ONLINE">Online</option>
-                <option value="OFFLINE">Offline</option>
-              </select>
-            </div>
           </div>
 
           <div className="flex justify-end space-x-4">

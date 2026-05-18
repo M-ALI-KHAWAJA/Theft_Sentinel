@@ -118,7 +118,7 @@ const CameraCardWithAI = ({ camera, onViewFeed, onEdit, onDelete, onStatusChange
         </div>
 
         {/* AI Monitoring Section */}
-        {camera.status === 'ONLINE' && (
+        {(camera.status === 'ONLINE' || isMonitoring) && (
           <div className="mt-4 pt-4 border-t border-dark-border">
             {/* AI Monitoring Toggle */}
             <div className="flex items-center justify-between mb-3">

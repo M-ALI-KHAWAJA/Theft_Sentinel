@@ -43,6 +43,7 @@ from apps.cameras.models import Camera
 # Import existing alert/incident logic (DO NOT MODIFY THEM)
 from apps.alerts.models import Alert
 from apps.alerts.serializers import AlertCreateSerializer
+from apps.alerts.services import dispatch_theft_alert_notifications
 from apps.incidents.models import Incident
 
 from .serializers import (
@@ -212,6 +213,10 @@ class AnalyzeFrameView(views.APIView):
             alert_serializer = AlertCreateSerializer(data=alert_data)
             if alert_serializer.is_valid():
                 alert = alert_serializer.save()
+                try:
+                    dispatch_theft_alert_notifications(alert, async_send=True)
+                except Exception:
+                    logger.exception("Failed to dispatch alert notifications for alert %s", alert.id)
                 
                 # Optionally create incident (using existing logic)
                 # Incident.objects.create(alert_id=alert, status='CREATED')
@@ -417,6 +422,10 @@ class ProcessCameraView(views.APIView):
             alert_serializer = AlertCreateSerializer(data=alert_data)
             if alert_serializer.is_valid():
                 alert = alert_serializer.save()
+                try:
+                    dispatch_theft_alert_notifications(alert, async_send=True)
+                except Exception:
+                    logger.exception("Failed to dispatch alert notifications for alert %s", alert.id)
                 return alert
             else:
                 logger.error(f"Failed to create alert: {alert_serializer.errors}")
@@ -564,6 +573,21 @@ class StartContinuousMonitorView(views.APIView):
                 {'error': 'AI service not ready. Models still loading.'},
                 status=status.HTTP_503_SERVICE_UNAVAILABLE
             )
+
+        try:
+            from apps.cameras.services import test_camera_feed
+
+            if not test_camera_feed(camera):
+                return Response(
+                    {'error': 'Camera feed is not available. Cannot turn on this camera.'},
+                    status=status.HTTP_400_BAD_REQUEST,
+                )
+        except Exception as exc:
+            logger.exception("Feed validation failed for camera %s", camera.id)
+            return Response(
+                {'error': f'Camera feed validation failed: {str(exc)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            )
         
         # Check if already running
         existing_stats = monitor_manager.get_monitor_stats(str(camera.id))
@@ -583,6 +607,8 @@ class StartContinuousMonitorView(views.APIView):
                     'camera_name': camera.name,
                     'stats': existing_stats,
                 }, status=status.HTTP_200_OK)
+        elif existing_stats:
+            monitor_manager.stop_monitor(str(camera.id))
         
         # Start monitoring
         success = monitor_manager.start_monitor(str(camera.id), camera.rtsp_url)
@@ -783,6 +809,8 @@ def realtime_tracking_sse_view(request, pk):
                 try:
                     # Block until a tracking result arrives or timeout
                     line = q.get(timeout=_QUEUE_TIMEOUT_S)
+                    if line is None:
+                        break
                     yield line          # already formatted as "data: {...}\n\n"
                 except queue.Empty:
                     # SSE comment — keeps the TCP connection alive through

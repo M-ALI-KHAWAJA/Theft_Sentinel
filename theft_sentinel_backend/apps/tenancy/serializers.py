@@ -5,7 +5,6 @@ from rest_framework import serializers
 
 from apps.accounts.serializers import validate_password_strength
 from apps.accounts.validation import (
-    normalize_cnic,
     normalize_email,
     normalize_pakistani_phone,
     normalize_username,
@@ -15,6 +14,12 @@ from apps.accounts.validation import (
     validate_reason,
 )
 from .models import Tenant, Branch, SuperAdminProfile, BranchPasswordResetRequest
+from .cnic_registry import (
+    branch_owner,
+    partner_owner,
+    validate_unique_cnic,
+    validate_unique_cnic_list,
+)
 
 User = get_user_model()
 
@@ -100,7 +105,7 @@ class SuperAdminCreateSerializer(serializers.Serializer):
                 {"partners_count": "Partner count must match provided names and CNICs."}
             )
         attrs["partner_names"] = [validate_name(name) for name in names]
-        attrs["partner_cnics"] = [normalize_cnic(cnic) for cnic in cnics]
+        attrs["partner_cnics"] = validate_unique_cnic_list(cnics)
         return attrs
 
 
@@ -132,7 +137,7 @@ class TenantBranchRegistrationSerializer(serializers.Serializer):
         return validate_username_format(value)
 
     def validate_cnic(self, value):
-        return normalize_cnic(value)
+        return validate_unique_cnic(value)
 
     def validate_email(self, value):
         value = normalize_email(value)
@@ -246,7 +251,12 @@ class SuperAdminProfileUpdateSerializer(serializers.Serializer):
             if errors:
                 raise serializers.ValidationError(errors)
             attrs["partner_names"] = [validate_name(name) for name in names]
-            attrs["partner_cnics"] = [normalize_cnic(cnic) for cnic in cnics]
+            request = self.context.get("request")
+            profile = getattr(getattr(request, "user", None), "super_admin_profile", None)
+            allowed = []
+            if profile is not None:
+                allowed = [partner_owner(profile.id, idx) for idx in range(count)]
+            attrs["partner_cnics"] = validate_unique_cnic_list(cnics, allowed_owners=allowed)
         return attrs
 
 
@@ -280,7 +290,10 @@ class BranchAdminProfileUpdateSerializer(serializers.Serializer):
         return validate_name(value)
 
     def validate_cnic(self, value):
-        return normalize_cnic(value)
+        request = self.context.get("request")
+        branch = getattr(getattr(request, "user", None), "branch", None)
+        allowed = [branch_owner(branch.id)] if branch is not None else None
+        return validate_unique_cnic(value, allowed_owners=allowed)
 
     def validate_phone_number(self, value):
         return normalize_pakistani_phone(value, required=True)

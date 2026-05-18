@@ -1,8 +1,8 @@
 """
 Camera Feed Health Services
 
-Observes feed availability WITHOUT modifying the stream pipeline.
-Derives camera ONLINE/OFFLINE status from actual connectivity.
+Observes feed availability WITHOUT modifying camera activation state.
+Camera ONLINE/OFFLINE is controlled only by explicit user actions.
 
 Dual-protocol:
   HTTP/HTTPS  → tested via requests.get()          (no OpenCV)
@@ -148,39 +148,27 @@ def test_camera_feed(camera) -> bool:
 
 def update_camera_status_from_feed(camera) -> bool:
     """
-    Update camera status based on actual feed state.
-    Returns True if the DB was updated.
+    Read-only feed health probe.
+
+    Returns True when the feed is reachable. This never changes camera.status;
+    it may refresh last_feed_timestamp so dashboards can show recent health.
     """
     feed_live = test_camera_feed(camera)
     now = timezone.now()
 
     if feed_live:
-        if camera.status != "ONLINE":
-            camera.status = "ONLINE"
-            camera.save(update_fields=["status"])
-            logger.info(
-                "[health] Camera %s marked ONLINE (feed confirmed live)",
-                camera.name,
-            )
-            return True
         if hasattr(camera, "last_feed_timestamp"):
             camera.last_feed_timestamp = now
             camera.save(update_fields=["last_feed_timestamp"])
-        return False
-    else:
-        if camera.status != "OFFLINE":
-            camera.status = "OFFLINE"
-            camera.save(update_fields=["status"])
-            logger.info(
-                "[health] Camera %s marked OFFLINE (feed dead)", camera.name
-            )
-            return True
-        return False
+        return True
+
+    logger.debug("[health] Camera %s feed unavailable; status unchanged", camera.name)
+    return False
 
 
 def check_all_camera_feeds() -> dict:
     """
-    Check all cameras in parallel and update their status.
+    Check all cameras in parallel without changing camera status.
     Hard 5-second SLA for the entire batch.
     """
     start_time = time.time()
@@ -190,11 +178,17 @@ def check_all_camera_feeds() -> dict:
     total = len(cameras)
 
     if total == 0:
-        return {"checked": 0, "updated": 0, "timestamp": now, "elapsed_seconds": 0.0}
+        return {
+            "checked": 0,
+            "feeds_live": 0,
+            "updated": 0,
+            "timestamp": now,
+            "elapsed_seconds": 0.0,
+        }
 
     max_workers = min(total, 10)
     cameras_checked = 0
-    cameras_updated = 0
+    feeds_live = 0
 
     def _check(cam):
         try:
@@ -212,15 +206,11 @@ def check_all_camera_feeds() -> dict:
             cameras_checked += 1
             try:
                 if future.result(timeout=0.1):
-                    cameras_updated += 1
+                    feeds_live += 1
             except Exception as exc:
                 logger.error(
                     "[health] Result error for camera %s: %s", cam.name, exc
                 )
-                if cam.status != "OFFLINE":
-                    cam.status = "OFFLINE"
-                    cam.save(update_fields=["status"])
-                    cameras_updated += 1
 
     elapsed = time.time() - start_time
 
@@ -232,7 +222,8 @@ def check_all_camera_feeds() -> dict:
 
     stats = {
         "checked": cameras_checked,
-        "updated": cameras_updated,
+        "feeds_live": feeds_live,
+        "updated": 0,
         "timestamp": now,
         "elapsed_seconds": round(elapsed, 2),
     }
@@ -244,8 +235,47 @@ def check_all_camera_feeds() -> dict:
         )
     else:
         logger.debug(
-            "[health] Batch check OK: %.2fs | %d cameras | %d updated",
-            elapsed, cameras_checked, cameras_updated,
+            "[health] Batch check OK: %.2fs | %d cameras | %d feeds live",
+            elapsed, cameras_checked, feeds_live,
         )
 
     return stats
+
+
+def cleanup_camera_runtime(camera) -> dict:
+    """
+    Stop all in-process runtime state associated with a camera.
+
+    Used before turning a camera off and before deleting it so no monitor or
+    shared stream remains orphaned after the database row changes.
+    """
+    camera_id = str(getattr(camera, "id", camera))
+    cleanup = {
+        "camera_id": camera_id,
+        "monitor_stopped": False,
+        "stream_stopped": False,
+        "sse_closed": False,
+    }
+
+    try:
+        from apps.ai_engine.services.continuous_monitor import monitor_manager
+
+        cleanup["monitor_stopped"] = bool(monitor_manager.stop_monitor(camera_id))
+    except Exception:
+        logger.exception("[cleanup] Failed to stop AI monitor for camera %s", camera_id)
+
+    try:
+        from .stream_manager import stream_manager
+
+        cleanup["stream_stopped"] = bool(stream_manager.stop_stream(camera_id))
+    except Exception:
+        logger.exception("[cleanup] Failed to stop stream for camera %s", camera_id)
+
+    try:
+        from apps.ai_engine.services.sse_registry import sse_registry
+
+        cleanup["sse_closed"] = bool(sse_registry.close_camera(camera_id))
+    except Exception:
+        logger.exception("[cleanup] Failed to close SSE subscribers for camera %s", camera_id)
+
+    return cleanup

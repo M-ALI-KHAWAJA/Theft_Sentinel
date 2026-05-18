@@ -49,9 +49,9 @@ const Navbar = () => {
   return (
     <nav className="fixed top-0 left-0 right-0 z-50 bg-dark-surface/95 backdrop-blur-lg border-b border-dark-border shadow-dark">
       <div className="max-w-full px-4 sm:px-6 lg:px-8">
-        <div className="flex justify-between items-center h-16">
+        <div className="flex justify-between items-center h-16 gap-3">
           {/* Left: Logo */}
-          <div className="flex items-center space-x-6 flex-1">
+          <div className="flex items-center space-x-6 flex-1 min-w-0 pl-12 lg:pl-0">
             <Link to="/dashboard" className="flex items-center space-x-2 group">
               <div className="w-10 h-10 rounded-lg bg-gradient-to-br from-ai-blue to-ai-purple flex items-center justify-center shadow-glow-ai group-hover:shadow-glow-ai-lg transition-all">
                 <CpuChipIcon className="h-6 w-6 text-dark-bg" />
@@ -84,7 +84,7 @@ const Navbar = () => {
           )}
 
           {/* Right: Profile Info & Logout */}
-          <div className="flex items-center space-x-2 sm:space-x-4 min-w-0">
+          <div className="flex items-center justify-end gap-2 sm:gap-4 min-w-0 flex-shrink-0">
             {/* Profile Info */}
             <div className="flex items-center space-x-2 sm:space-x-3 px-1 sm:px-4 py-2 min-w-0">
               <div className="w-9 h-9 sm:w-10 sm:h-10 rounded-full bg-gradient-to-br from-ai-blue to-ai-purple flex items-center justify-center flex-shrink-0">
@@ -103,7 +103,7 @@ const Navbar = () => {
             {/* Logout Button */}
             <button
               onClick={handleLogout}
-              className="px-2 sm:px-4 py-2 text-sm text-status-error hover:bg-dark-card rounded-lg transition-colors"
+              className="px-2 sm:px-4 py-2 text-sm text-status-error hover:bg-dark-card rounded-lg transition-colors flex-shrink-0"
             >
               Logout
             </button>

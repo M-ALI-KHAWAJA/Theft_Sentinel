@@ -17,12 +17,16 @@ class IncidentSerializer(serializers.ModelSerializer):
     alert_details = AlertSerializer(source='alert_id', read_only=True)
     assigned_to_details = UserSerializer(source='assigned_to', read_only=True)
     assigned_by_details = UserSerializer(source='assigned_by', read_only=True)
+    detection_clip_url = serializers.SerializerMethodField()
+    detection_clip_metadata = serializers.SerializerMethodField()
     
     class Meta:
         model = Incident
         fields = [
             'id', 'alert_id', 'alert_details', 'assigned_to', 'assigned_to_details',
-            'assigned_by', 'assigned_by_details', 'status', 'notes', 'created_at', 'updated_at'
+            'assigned_by', 'assigned_by_details', 'status', 'notes',
+            'detection_clip_url', 'detection_clip_metadata',
+            'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
     
@@ -37,6 +41,23 @@ class IncidentSerializer(serializers.ModelSerializer):
     def get_assigned_by(self, obj):
         """Convert assigned_by ObjectId to string"""
         return str(obj.assigned_by.id) if obj.assigned_by else None
+
+    def get_detection_clip_url(self, obj):
+        alert = getattr(obj, 'alert_id', None)
+        return getattr(alert, 'video_url', None) if alert else None
+
+    def get_detection_clip_metadata(self, obj):
+        alert = getattr(obj, 'alert_id', None)
+        if not alert:
+            return None
+        metadata = getattr(alert, 'metadata', None) or {}
+        return {
+            'available': bool(getattr(alert, 'video_url', None)),
+            'public_id': getattr(alert, 'video_public_id', None),
+            'alert_timestamp': alert.timestamp.isoformat() if alert.timestamp else None,
+            'detected_by': metadata.get('detected_by'),
+            'confidence': metadata.get('confidence'),
+        }
 
 
 class IncidentCreateSerializer(serializers.ModelSerializer):

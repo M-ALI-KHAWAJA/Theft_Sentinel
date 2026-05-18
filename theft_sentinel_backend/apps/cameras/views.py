@@ -13,6 +13,7 @@ logger = logging.getLogger(__name__)
 
 from .models import Camera
 from .serializers import CameraSerializer, CameraCreateSerializer, CameraStatusUpdateSerializer
+from .services import cleanup_camera_runtime, test_camera_feed
 from apps.accounts.permissions import CanManageCameras, CanViewCameraFeeds
 
 
@@ -51,12 +52,14 @@ class CameraListCreateView(generics.ListCreateAPIView):
         return queryset.order_by('-created_at')
 
     def perform_create(self, serializer):
+        # Cameras are created inactive. Activation is manual via the status
+        # endpoint, which validates the feed and starts AI monitoring.
         # Ensure camera is linked to creator's branch (Super Admin may omit)
         user_branch = getattr(self.request.user, "branch", None)
         if getattr(self.request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
-            serializer.save(branch=user_branch)
+            serializer.save(branch=user_branch, status="OFFLINE")
             return
-        serializer.save()
+        serializer.save(status="OFFLINE")
 
 
 class CameraDetailView(generics.RetrieveUpdateDestroyAPIView):
@@ -76,6 +79,10 @@ class CameraDetailView(generics.RetrieveUpdateDestroyAPIView):
             qs = qs.filter(branch=user_branch)
         return qs
 
+    def perform_destroy(self, instance):
+        cleanup_camera_runtime(instance)
+        instance.delete()
+
 
 class CameraStatusUpdateView(views.APIView):
     """
@@ -86,7 +93,11 @@ class CameraStatusUpdateView(views.APIView):
     
     def patch(self, request, pk):
         try:
-            camera = Camera.objects.get(pk=pk)
+            queryset = Camera.objects.all()
+            user_branch = getattr(request.user, "branch", None)
+            if getattr(request.user, "role", None) != "SUPER_ADMIN" and user_branch is not None:
+                queryset = queryset.filter(branch=user_branch)
+            camera = queryset.get(pk=pk)
         except Camera.DoesNotExist:
             return Response(
                 {'error': 'Camera not found'},
@@ -95,9 +106,26 @@ class CameraStatusUpdateView(views.APIView):
         
         serializer = CameraStatusUpdateSerializer(data=request.data)
         if serializer.is_valid():
-            camera.status = serializer.validated_data['status']
-            camera.save()
-            return Response(CameraSerializer(camera).data, status=status.HTTP_200_OK)
+            requested_status = serializer.validated_data['status']
+
+            if requested_status == 'ONLINE':
+                if not test_camera_feed(camera):
+                    return Response(
+                        {'error': 'Camera feed is not available. Cannot turn on this camera.'},
+                        status=status.HTTP_400_BAD_REQUEST,
+                    )
+
+                camera.status = 'ONLINE'
+                camera.save(update_fields=['status'])
+                data = CameraSerializer(camera).data
+                data['message'] = 'Camera turned on successfully.'
+                return Response(data, status=status.HTTP_200_OK)
+
+            camera.status = 'OFFLINE'
+            camera.save(update_fields=['status'])
+            data = CameraSerializer(camera).data
+            data['message'] = 'Camera turned off successfully.'
+            return Response(data, status=status.HTTP_200_OK)
         
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 

@@ -1,8 +1,8 @@
 """
 Django management command to start a background feed checker service.
 
-This command runs continuously, checking camera feeds every 5 seconds.
-It should be run as a separate process (e.g., via systemd, supervisor, or background thread).
+This command runs continuously, checking camera feed availability every 5 seconds.
+It reports health only and never changes camera ONLINE/OFFLINE state.
 
 Usage:
     python manage.py start_feed_checker
@@ -19,7 +19,7 @@ logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = 'Starts a background service that checks camera feeds every 5 seconds'
+    help = 'Starts a read-only feed health checker every 5 seconds'
 
     def add_arguments(self, parser):
         parser.add_argument(
@@ -51,6 +51,7 @@ class Command(BaseCommand):
                 self.stdout.write(self.style.SUCCESS(
                     f"[{timezone.now().strftime('%H:%M:%S')}] "
                     f"Checked {health_stats['checked']} cameras, "
+                    f"{health_stats.get('feeds_live', 0)} feeds live, "
                     f"updated {health_stats['updated']} statuses "
                     f"(took {elapsed:.2f}s)"
                 ))

@@ -549,7 +549,7 @@ class ContinuousMonitor:
         """Create alert for theft detection"""
         try:
             from apps.alerts.models import Alert
-            from apps.alerts.services import dispatch_theft_alert_sms
+            from apps.alerts.services import dispatch_theft_alert_notifications
             
             metadata = {
                 'confidence': result['confidence'],
@@ -575,9 +575,9 @@ class ContinuousMonitor:
             # ── Branch-scoped Twilio alert destination (dynamic per branch) ──
             # Best-effort, non-blocking; never impacts AI pipeline.
             try:
-                dispatch_theft_alert_sms(alert, async_send=True)
+                dispatch_theft_alert_notifications(alert, async_send=True)
             except Exception:
-                logger.exception("Failed to dispatch Twilio SMS for alert %s", alert.id)
+                logger.exception("Failed to dispatch alert notifications for alert %s", alert.id)
             return alert
             
         except Exception as e:
@@ -680,7 +680,7 @@ class ContinuousMonitor:
 class MonitorManager:
     """
     Manages multiple continuous monitors
-    Singleton service that runs in background
+    Monitoring starts only from explicit user actions.
     """
     
     _instance = None
@@ -701,12 +701,6 @@ class MonitorManager:
         self.monitors: Dict[str, ContinuousMonitor] = {}
         self._initialized = True
 
-        # Watchdog: checks every 30 s whether inference threads are still alive
-        # and auto-restarts any that died without being explicitly stopped.
-        self._watchdog_thread = threading.Thread(
-            target=self._watchdog_loop, daemon=True, name="monitor-watchdog"
-        )
-        self._watchdog_thread.start()
         logger.info("📹 MonitorManager initialized (watchdog active)")
 
     def _watchdog_loop(self):
@@ -717,6 +711,8 @@ class MonitorManager:
         the watchdog removes the dead entry and restarts the monitor so the
         camera resumes monitoring automatically after a crash.
         """
+        return
+
         while True:
             time.sleep(30)
             for camera_id, monitor in list(self.monitors.items()):

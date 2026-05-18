@@ -160,6 +160,8 @@ const View = () => {
     ACKNOWLEDGED: 'bg-ai-purple/20 text-ai-purple border border-ai-purple/50',
     RESOLVED: 'bg-status-success/20 text-status-success border border-status-success/50',
   };
+  const detectionClipUrl = incident.detection_clip_url || incident.alert_details?.video_url;
+  const clipMetadata = incident.detection_clip_metadata || {};
 
   return (
     <div className="space-y-6">
@@ -239,6 +241,56 @@ const View = () => {
               </div>
             </div>
           )}
+
+          {/* Detection Clip */}
+          <div className="bg-dark-card rounded-lg p-6 border border-dark-border">
+            <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 mb-4">
+              <h3 className="text-lg font-semibold text-dark-text-primary">Detection Clip</h3>
+              {clipMetadata.available && (
+                <span className="text-xs font-medium px-2 py-1 rounded-full bg-status-success/20 text-status-success border border-status-success/40">
+                  Available
+                </span>
+              )}
+            </div>
+
+            {detectionClipUrl ? (
+              <div className="rounded-lg overflow-hidden border border-dark-border bg-black">
+                <video
+                  controls
+                  playsInline
+                  preload="metadata"
+                  className="w-full max-h-[480px] object-contain bg-black"
+                >
+                  <source src={detectionClipUrl} type="video/mp4" />
+                  <source src={detectionClipUrl} type="video/webm" />
+                  Your browser does not support the video element.
+                </video>
+                <div className="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-2 px-4 py-3 bg-dark-surface border-t border-dark-border">
+                  <div className="text-xs text-dark-text-muted space-y-1">
+                    {clipMetadata.alert_timestamp && (
+                      <p>Captured: {new Date(clipMetadata.alert_timestamp).toLocaleString()}</p>
+                    )}
+                    {typeof clipMetadata.confidence === 'number' && (
+                      <p>Confidence: {(clipMetadata.confidence * 100).toFixed(1)}%</p>
+                    )}
+                  </div>
+                  <a
+                    href={detectionClipUrl}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="text-xs text-ai-blue hover:underline font-medium"
+                  >
+                    Open clip
+                  </a>
+                </div>
+              </div>
+            ) : (
+              <div className="rounded-lg border border-dashed border-dark-border bg-dark-surface p-6 text-center">
+                <p className="text-dark-text-secondary font-medium">No detection clip is available for this incident.</p>
+                <p className="text-xs text-dark-text-muted mt-2">Older incidents or alerts without uploaded clips will show this fallback.</p>
+              </div>
+            )}
+          </div>
 
           {/* Details Grid */}
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">

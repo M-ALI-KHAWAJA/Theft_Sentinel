@@ -1,4 +1,5 @@
 import { Link, useLocation, useNavigate } from 'react-router-dom';
+import { useEffect } from 'react';
 import { useRecoilState, useRecoilValue, useSetRecoilState } from 'recoil';
 import { sidebarOpenState } from '../store/uiStore';
 import { authUserState, authTokensState } from '../store/authStore';
@@ -94,6 +95,20 @@ const Sidebar = () => {
 
   const items = menuItems[user?.role] || [];
 
+  useEffect(() => {
+    const syncSidebarForViewport = () => {
+      setSidebarOpen(window.innerWidth >= 1024);
+    };
+
+    syncSidebarForViewport();
+    window.addEventListener('resize', syncSidebarForViewport);
+    return () => window.removeEventListener('resize', syncSidebarForViewport);
+  }, [setSidebarOpen]);
+
+  const closeOnSmallScreen = () => {
+    if (window.innerWidth < 1024) setSidebarOpen(false);
+  };
+
   return (
     <>
       <CenteredModal
@@ -106,15 +121,16 @@ const Sidebar = () => {
       {/* Mobile toggle */}
       <button
         onClick={() => setSidebarOpen(!sidebarOpen)}
-        className="lg:hidden fixed top-20 left-4 z-50 p-2 bg-dark-card border border-dark-border rounded-lg text-dark-text-primary shadow-dark hover:bg-dark-surface transition-colors"
+        className="lg:hidden fixed top-3 left-3 z-[70] p-2 bg-dark-card border border-dark-border rounded-lg text-dark-text-primary shadow-dark hover:bg-dark-surface transition-colors"
+        aria-label={sidebarOpen ? 'Close navigation menu' : 'Open navigation menu'}
       >
         {sidebarOpen ? <XMarkIcon className="h-6 w-6" /> : <Bars3Icon className="h-6 w-6" />}
       </button>
 
       {/* Sidebar */}
       <div
-        className={`fixed left-0 top-16 h-[calc(100vh-4rem)] bg-dark-surface border-r border-dark-border transition-all duration-300 z-30 overflow-y-auto ${
-          sidebarOpen ? 'w-64' : 'w-0 lg:w-20'
+        className={`fixed left-0 top-16 h-[calc(100vh-4rem)] w-72 bg-dark-surface border-r border-dark-border transition-all duration-300 z-50 lg:z-30 overflow-y-auto ${
+          sidebarOpen ? 'translate-x-0 lg:w-64' : '-translate-x-full lg:translate-x-0 lg:w-20'
         }`}
       >
         <nav className="mt-4">
@@ -127,6 +143,7 @@ const Sidebar = () => {
                 <li key={item.path}>
                   <Link
                     to={item.path}
+                    onClick={closeOnSmallScreen}
                     className={`flex items-center space-x-3 px-4 py-3 rounded-lg transition-all duration-200 group ${
                       active
                         ? 'bg-gradient-to-r from-ai-blue/20 to-ai-purple/20 text-ai-blue border-l-4 border-ai-blue shadow-glow-ai'
@@ -162,7 +179,7 @@ const Sidebar = () => {
       {/* Overlay for mobile */}
       {sidebarOpen && (
         <div
-          className="lg:hidden fixed inset-0 bg-dark-bg/80 backdrop-blur-sm z-20 top-16"
+          className="lg:hidden fixed inset-0 bg-dark-bg/80 backdrop-blur-sm z-40 top-16"
           onClick={() => setSidebarOpen(false)}
         />
       )}

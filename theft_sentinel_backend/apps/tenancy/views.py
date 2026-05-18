@@ -28,6 +28,11 @@ from .serializers import (
     BranchAdminResetRequestCreateSerializer,
     BranchPasswordResetRequestSerializer,
 )
+from .cnic_registry import (
+    sync_branch_admin_cnic,
+    sync_super_admin_partner_cnics,
+    unregister_branch_admin_cnic,
+)
 
 User = get_user_model()
 
@@ -117,6 +122,7 @@ class CreateSuperAdminView(views.APIView):
                     "partners",
                 ]
             )
+            sync_super_admin_partner_cnics(profile)
 
         return Response(
             {
@@ -158,6 +164,7 @@ class BranchRegistrationView(views.APIView):
                 is_active=True,
                 branch=branch,
             )
+            sync_branch_admin_cnic(branch)
 
         return Response(
             {
@@ -337,10 +344,14 @@ class SuperAdminBranchDeleteView(views.APIView):
             # Camera deletion cascades camera-owned alerts, incidents, tracking,
             # surveillance events, and AI inference records.
             from apps.cameras.models import Camera
+            from apps.cameras.services import cleanup_camera_runtime
 
-            Camera.objects.filter(branch=branch).delete()
+            for camera in Camera.objects.filter(branch=branch):
+                cleanup_camera_runtime(camera)
+                camera.delete()
 
             tenant = branch.tenant
+            unregister_branch_admin_cnic(branch)
             branch.delete()
 
             if tenant and not tenant.branches.exists():
@@ -371,7 +382,7 @@ class SuperAdminProfileView(views.APIView):
     def put(self, request):
         profile = self._get_profile(request.user)
 
-        serializer = SuperAdminProfileUpdateSerializer(data=request.data)
+        serializer = SuperAdminProfileUpdateSerializer(data=request.data, context={"request": request})
         serializer.is_valid(raise_exception=True)
         data = serializer.validated_data
 
@@ -387,6 +398,7 @@ class SuperAdminProfileView(views.APIView):
             profile.partners = partners
 
         profile.save()
+        sync_super_admin_partner_cnics(profile)
         return Response(SuperAdminProfileSerializer(profile).data, status=status.HTTP_200_OK)
 
     def delete(self, request):
@@ -448,6 +460,7 @@ class BranchAdminProfileView(views.APIView):
             branch.tenant.save(update_fields=["company_name", "company_address"])
 
         branch.save(update_fields=["admin_name", "admin_cnic", "admin_email", "admin_phone", "branch_name"])
+        sync_branch_admin_cnic(branch)
         return Response(BranchAdminProfileSerializer(branch).data, status=status.HTTP_200_OK)
 
 

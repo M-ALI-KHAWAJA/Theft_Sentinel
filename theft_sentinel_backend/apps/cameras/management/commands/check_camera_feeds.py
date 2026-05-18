@@ -3,7 +3,7 @@ Django management command to periodically check camera feed health.
 
 This command:
 - Tests each camera feed to verify it's actually accessible
-- Updates camera ONLINE/OFFLINE status based on feed availability
+- Never changes camera ONLINE/OFFLINE state
 - Runs every 5 seconds (should be called via cron or task scheduler)
 
 Usage:
@@ -24,7 +24,7 @@ logger = logging.getLogger(__name__)
 
 
 class Command(BaseCommand):
-    help = 'Checks camera feed health and updates camera status based on actual feed availability'
+    help = 'Checks camera feed health without changing camera status'
 
     def handle(self, *args, **options):
         self.stdout.write(self.style.SUCCESS(f"[{timezone.now().isoformat()}] Starting camera feed health check..."))
@@ -35,6 +35,7 @@ class Command(BaseCommand):
             
             self.stdout.write(self.style.SUCCESS(
                 f"Feed check complete: {health_stats['checked']} cameras checked, "
+                f"{health_stats.get('feeds_live', 0)} feeds live, "
                 f"{health_stats['updated']} statuses updated."
             ))
             

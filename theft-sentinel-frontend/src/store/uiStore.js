@@ -3,7 +3,7 @@ import { atom } from 'recoil';
 // Sidebar state
 export const sidebarOpenState = atom({
   key: 'sidebarOpenState',
-  default: true,
+  default: false,
 });
 
 // Loading state

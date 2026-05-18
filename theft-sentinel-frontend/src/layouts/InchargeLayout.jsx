@@ -15,8 +15,8 @@ const InchargeLayout = () => {
       <Navbar />
       <Sidebar />
       <main
-        className={`transition-all duration-300 pt-20 ${
-          sidebarOpen ? 'ml-64' : 'ml-0 lg:ml-20'
+        className={`transition-all duration-300 pt-20 ml-0 ${
+          sidebarOpen ? 'lg:ml-64' : 'lg:ml-20'
         }`}
       >
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 pb-8">

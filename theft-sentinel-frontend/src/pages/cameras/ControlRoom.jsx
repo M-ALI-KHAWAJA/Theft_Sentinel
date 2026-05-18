@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
-import { listCameras, updateCameraStatus } from '../../api/cameras';
+import { deleteCamera, listCameras, updateCameraStatus } from '../../api/cameras';
 import { useRecoilValue } from 'recoil';
 import { isAuthenticatedState, authUserState } from '../../store/authStore';
 import { useNavigate } from 'react-router-dom';
@@ -8,6 +8,7 @@ import FullScreenCameraModal from '../../components/FullScreenCameraModal';
 import LiveTrackingNodeGraph from '../../components/LiveTrackingNodeGraph';
 import { VideoCameraIcon, ArrowPathIcon, PlusIcon } from '@heroicons/react/24/outline';
 import toast from 'react-hot-toast';
+import ConfirmationModal from '../../components/ConfirmationModal';
 
 /**
  * Guard Control Room - Read-only camera feed viewer
@@ -23,6 +24,8 @@ const ControlRoom = () => {
     zone: '',
   });
   const [fullScreenCamera, setFullScreenCamera] = useState(null);
+  const [deleteConfirmation, setDeleteConfirmation] = useState({ show: false, camera: null });
+  const [deleting, setDeleting] = useState(false);
   const isAuthenticated = useRecoilValue(isAuthenticatedState);
   const currentUser = useRecoilValue(authUserState);
   const navigate = useNavigate();
@@ -81,13 +84,42 @@ const ControlRoom = () => {
   };
 
   const handleDelete = (camera) => {
-    navigate(`/cameras/control-room`, { state: { deleteId: camera.id } });
+    setDeleteConfirmation({ show: true, camera });
+  };
+
+  const handleDeleteConfirm = async () => {
+    const camera = deleteConfirmation.camera;
+    if (!camera) return;
+
+    setDeleting(true);
+    try {
+      await deleteCamera(camera.id);
+      toast.success('Camera deleted successfully');
+      setDeleteConfirmation({ show: false, camera: null });
+      await fetchCameras();
+    } catch (error) {
+      const errorMsg =
+        error.response?.data?.error ||
+        error.response?.data?.detail ||
+        'Failed to delete camera';
+      toast.error(errorMsg);
+    } finally {
+      setDeleting(false);
+    }
+  };
+
+  const handleDeleteCancel = () => {
+    if (deleting) return;
+    setDeleteConfirmation({ show: false, camera: null });
   };
 
   const handleStatusChange = async (camera, status) => {
     try {
-      await updateCameraStatus(camera.id, status);
-      toast.success(status === 'ONLINE' ? 'Camera activated successfully' : 'Camera turned off successfully');
+      const response = await updateCameraStatus(camera.id, status);
+      toast.success(
+        response.data?.message ||
+          (status === 'ONLINE' ? 'Camera turned on successfully' : 'Camera turned off successfully')
+      );
       fetchCameras();
     } catch (error) {
       const errorMsg = error.response?.data?.error || 'Failed to update camera status';
@@ -274,6 +306,17 @@ const ControlRoom = () => {
         show={fullScreenCamera !== null}
         camera={fullScreenCamera}
         onClose={handleCloseFullScreen}
+      />
+
+      <ConfirmationModal
+        show={deleteConfirmation.show}
+        title="Delete Camera"
+        message={`Delete "${deleteConfirmation.camera?.name || 'this camera'}"? Active monitoring and live stream runtime state will be stopped first.`}
+        onConfirm={handleDeleteConfirm}
+        onCancel={handleDeleteCancel}
+        confirmText={deleting ? 'Deleting...' : 'Delete'}
+        cancelText="Cancel"
+        type="danger"
       />
     </div>
   );

@@ -21,7 +21,7 @@ class CameraSerializer(serializers.ModelSerializer):
             'id', 'name', 'rtsp_url', 'location', 'zone',
             'status', 'created_at', 'ai_monitoring_enabled',
         ]
-        read_only_fields = ['id', 'created_at']
+        read_only_fields = ['id', 'created_at', 'status', 'ai_monitoring_enabled']
     
     def validate_status(self, value):
         """Validate status"""

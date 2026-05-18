@@ -20,7 +20,6 @@ export const PASSWORD_EXAMPLE = 'Theft@123';
 const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const usernameRegex = /^[A-Za-z][A-Za-z0-9_.]{2,29}$/;
 const phoneRegex = /^(\+92|92|0)3[0-9]{9}$/;
-const cnicRegex = /^\d{5}-?\d{7}-?\d{1}$/;
 const nameRegex = /^[A-Za-z .-]+$/;
 const companyRegex = /^[A-Za-z0-9 .&-]+$/;
 const streamUrlRegex = /^(rtsp|rtmp|https?):\/\/\S+$/i;
@@ -91,12 +90,13 @@ export const normalizePakistaniPhone = (phone) => {
 
 export const validateCNIC = (cnic) => {
   const text = trimInput(cnic || '');
-  if (!cnicRegex.test(text)) return result(false, CNIC_MESSAGE);
+  const digits = text.replace(/[\s-]+/g, '');
+  if (!/^\d{13}$/.test(digits)) return result(false, CNIC_MESSAGE);
   return result(true);
 };
 
 export const normalizeCNIC = (cnic) => {
-  const digits = trimInput(cnic || '').replaceAll('-', '');
+  const digits = trimInput(cnic || '').replace(/[\s-]+/g, '');
   if (digits.length !== 13) return trimInput(cnic || '');
   return `${digits.slice(0, 5)}-${digits.slice(5, 12)}-${digits.slice(12)}`;
 };

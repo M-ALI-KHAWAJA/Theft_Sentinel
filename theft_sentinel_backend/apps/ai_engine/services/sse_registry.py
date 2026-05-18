@@ -101,6 +101,21 @@ class SSERegistry:
     def has_subscribers(self, camera_id: str) -> bool:
         return self.subscriber_count(camera_id) > 0
 
+    def close_camera(self, camera_id: str) -> bool:
+        """Close and remove every SSE subscriber for a deleted/stopped camera."""
+        with self._lock:
+            bucket = self._subscribers.pop(str(camera_id), [])
+
+        for q in bucket:
+            try:
+                q.put_nowait(None)
+            except queue.Full:
+                pass
+
+        if bucket:
+            logger.info("SSE: closed %d subscriber(s) for camera=%s", len(bucket), camera_id)
+        return bool(bucket)
+
 
 # ── helpers ───────────────────────────────────────────────────────────────────
 

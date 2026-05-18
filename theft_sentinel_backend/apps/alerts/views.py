@@ -18,7 +18,7 @@ import logging
 from .models import Alert
 from .serializers import AlertSerializer, AlertCreateSerializer, AlertAcknowledgeSerializer
 from .serializers import VALID_ALERT_SEVERITIES
-from .services import dispatch_theft_alert_sms
+from .services import dispatch_theft_alert_notifications
 from apps.accounts.permissions import IsAdminOrIncharge, CanViewAlerts, CanDeleteAlerts
 
 logger = logging.getLogger(__name__)
@@ -105,9 +105,9 @@ class AlertListCreateView(generics.ListCreateAPIView):
     def perform_create(self, serializer):
         alert = serializer.save()
         try:
-            dispatch_theft_alert_sms(alert, async_send=True)
+            dispatch_theft_alert_notifications(alert, async_send=True)
         except Exception:
-            logger.exception("Failed to dispatch Twilio SMS for alert %s", alert.id)
+            logger.exception("Failed to dispatch alert notifications for alert %s", alert.id)
 
 
 class AlertDetailView(generics.RetrieveUpdateDestroyAPIView):
